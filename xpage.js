@@ -429,24 +429,30 @@ window.__xArticleWrite = async function(payload) {
       }
     }
 
-    // Find all media atomic blocks
+    // Find all media atomic blocks with entity mapping
+    const entityToBlock = new Map();
     const mediaBlocks = [];
     blockMap.forEach((block, key) => {
       if (block.getType() !== 'atomic') return;
       try {
+        let firstEntity = null;
         block.findEntityRanges(
           (ch) => Boolean(ch.getEntity()),
           (start) => {
             const ek = block.getCharacterList().get(start)?.getEntity?.();
             if (ek) {
-              try {
-                if (contentState.getEntity(ek).getType() === 'MEDIA') {
-                  if (!moves.has(key)) mediaBlocks.push({ blockKey: key, entityKey: ek });
-                }
-              } catch {}
+              firstEntity = firstEntity || ek;
+              entityToBlock.set(ek, key);
             }
           }
         );
+        if (firstEntity) {
+          try {
+            if (contentState.getEntity(firstEntity).getType() === 'MEDIA') {
+              mediaBlocks.push({ blockKey: key, entityKey: firstEntity });
+            }
+          } catch {}
+        }
       } catch {}
     });
 
@@ -455,6 +461,7 @@ window.__xArticleWrite = async function(payload) {
     for (const upload of uploads) {
       if (!upload.markerBlock || !blockMap.has(upload.markerBlock)) { missing++; continue; }
       let imgBlock = upload.blockKey && blockMap.has(upload.blockKey) ? upload.blockKey : null;
+      if (!imgBlock && upload.entityKey) imgBlock = entityToBlock.get(upload.entityKey) || null;
       if (!imgBlock) {
         while (fb < mediaBlocks.length && Array.from(moves.values()).some(m => m.imageBlock === mediaBlocks[fb].blockKey)) fb++;
         if (fb < mediaBlocks.length) imgBlock = mediaBlocks[fb++].blockKey;
@@ -667,9 +674,13 @@ window.__xArticleWrite = async function(payload) {
           };
 
           if (!upload.coverOnly) {
-            // Image landed at marker position — just clean up marker text
-            replaceMarkerText(draftNode, op.marker, '');
-            upload.settled = true;
+            // Relocate image to marker position (safety net — cursor placement alone isn't enough)
+            await sleep(300);
+            draftNode = findDraftStateNode() || draftNode;
+            const relResult = relocateImages(draftNode, [upload]);
+            // Then clean up marker text
+            if (!relResult.missing) replaceMarkerText(draftNode, op.marker, '');
+            upload.settled = !relResult.missing;
           }
 
           uploads.push(upload);
