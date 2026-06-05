@@ -1,0 +1,13 @@
+{
+  "name": "hermes-x-publisher",
+  "version": "4.0.0",
+  "description": "Publish Markdown articles to X Articles via Chrome Extension auto-injection",
+  "main": "xarticle-server.js",
+  "scripts": {
+    "publish": "bash publish-to-x.sh",
+    "server": "node xarticle-server.js",
+    "setup": "bash setup.sh"
+  },
+  "keywords": ["x", "twitter", "articles", "publisher", "hermes", "chrome-extension"],
+  "license": "MIT"
+}
