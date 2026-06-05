@@ -79,6 +79,19 @@ window.__xArticleWrite = async function(payload) {
     }) || null;
   }
 
+  // When editor is empty, bootstrap by inserting a space so we have a character sample
+  function ensureSampleBlock(draftNode) {
+    let sb = findDraftSampleBlock(draftNode);
+    if (sb) return sb;
+    // Empty editor — insert a space, then find sample
+    const editor = findEditorElement();
+    if (editor) {
+      editor.focus();
+      document.execCommand('insertText', false, ' ');
+    }
+    return findDraftSampleBlock(draftNode);
+  }
+
   // ── Draft.js Content Writing ──────────────────────────
   function draftInlineStyleName(style) {
     return { Bold: 'BOLD', Italic: 'ITALIC', Strikethrough: 'STRIKETHROUGH', Code: 'CODE' }[style] || style;
@@ -91,7 +104,7 @@ window.__xArticleWrite = async function(payload) {
     const SelectionState = editorState.getSelection().constructor;
     let contentState = editorState.getCurrentContent();
     const blockMap = contentState.getBlockMap();
-    const sampleBlock = findDraftSampleBlock(draftNode);
+    const sampleBlock = ensureSampleBlock(draftNode);
     if (!sampleBlock) return { ok: false, error: 'No Draft.js sample block' };
 
     const CharacterList = sampleBlock.getCharacterList().constructor;
