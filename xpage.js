@@ -714,11 +714,15 @@ window.__xArticleWrite = async function(payload) {
           };
 
           if (!upload.coverOnly) {
-            // Relocate image to marker position (safety net — cursor placement alone isn't enough)
+            // Relocate image to marker position
             await sleep(300);
             draftNode = findDraftStateNode() || draftNode;
             const relResult = relocateImages(draftNode, [upload]);
-            // Then clean up marker text
+            // Refresh draftNode BEFORE marker cleanup (so it sees relocated state)
+            if (relResult.moved) {
+              await sleep(150);
+              draftNode = findDraftStateNode() || draftNode;
+            }
             if (!relResult.missing) replaceMarkerText(draftNode, op.marker, '');
             upload.settled = !relResult.missing;
           }
