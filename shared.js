@@ -186,6 +186,17 @@
         titleSource = title ? "heading" : "";
         segments.splice(titleIndex, 1);
       }
+    } else if (extractTitle && title) {
+      // frontmatter 已有标题：若正文首个 H1 与标题同名，删掉它，避免正文里重复出现标题
+      const h1Index = segments.findIndex(
+        (segment) => segment.type === "text" && segment.kind === "header-one"
+      );
+      if (h1Index >= 0) {
+        const h1Text = String(segments[h1Index].text || "").trim();
+        if (h1Text && h1Text === String(title).trim()) {
+          segments.splice(h1Index, 1);
+        }
+      }
     }
     if (extractTitle && !title && titleCandidate) {
       title = titleCandidate;
@@ -619,6 +630,8 @@
     const plan = [];
     let listTag = null;
     let listItems = [];
+    // 封面源：若正文里某张图就是封面，把它当 coverOnly 处理（只设封面，不留在正文）
+    const coverSource = String(options.coverSource || "").trim();
 
     const marker = (type) => `${prefix}${type}_${index++}__`;
     const addBlock = (type, text, segment = null) => {
@@ -718,7 +731,12 @@
       if (segment.type === "image") {
         const result = imageResults.get(segment);
         if (result?.ok) {
-          addImageOperation(segment, result);
+          const isCover = coverSource && imageSourcesMatch(segment.source, coverSource);
+          addImageOperation(
+            segment,
+            result,
+            isCover ? { markerType: "COVER", coverOnly: true } : {}
+          );
         } else {
           const fallback = imageFallbackMarkdown(segment);
           html.push(`<p>${escapeHtml(fallback)}</p>`);
@@ -754,7 +772,6 @@
       }
     }
 
-    const coverSource = String(options.coverSource || "").trim();
     const coverResult = options.coverResult || null;
     const coverAlreadyInBody = coverSource && segments.some(
       (segment) => segment.type === "image" && imageSourcesMatch(segment.source, coverSource)

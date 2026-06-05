@@ -79,25 +79,22 @@ window.__xArticleWrite = async function(payload) {
     }) || null;
   }
 
-  // When editor is empty, bootstrap by inserting a space so we have a character sample
-  async function ensureSampleBlock(draftNode) {
-    let sb = findDraftSampleBlock(draftNode);
-    if (sb) return { draftNode, sampleBlock: sb };
-    // Empty editor — insert a space, wait for React to re-render
+  // 全新的空 X 文章编辑器里没有任何字符，writeDraftBlocks 找不到字符样本会失败、降级成 HTML 粘贴，
+  // 导致后续 marker/图片落位全乱。这里先敲一个字符让 Draft 生成真实 CharacterMetadata（xPoster 技巧）。
+  // writeDraftBlocks 会用全新 blockMap 覆盖，这个临时字符块随后被丢弃，不会残留。
+  async function ensureDraftCharacterSample(draftNode) {
+    if (findDraftSampleBlock(draftNode)) return draftNode;
     const editor = findEditorElement();
-    if (editor) {
-      editor.focus();
-      document.execCommand('insertText', false, ' ');
-    }
+    if (!editor) return draftNode;
+    editor.focus();
+    try { document.execCommand('insertText', false, 'x'); } catch {}
     const deadline = Date.now() + 1600;
     while (Date.now() < deadline) {
       await sleep(80);
       const latestNode = findDraftStateNode() || draftNode;
-      sb = findDraftSampleBlock(latestNode);
-      if (sb) return { draftNode: latestNode, sampleBlock: sb };
+      if (findDraftSampleBlock(latestNode)) return latestNode;
     }
-    const fallback = findDraftStateNode() || draftNode;
-    return { draftNode: fallback, sampleBlock: findDraftSampleBlock(fallback) };
+    return findDraftStateNode() || draftNode;
   }
 
   // ── Draft.js Content Writing ──────────────────────────
@@ -105,18 +102,16 @@ window.__xArticleWrite = async function(payload) {
     return { Bold: 'BOLD', Italic: 'ITALIC', Strikethrough: 'STRIKETHROUGH', Code: 'CODE' }[style] || style;
   }
 
-  async function writeDraftBlocks(draftNode, blocks) {
+  function writeDraftBlocks(draftNode, blocks) {
     if (!Array.isArray(blocks) || !blocks.length) return { ok: false, error: 'No blocks' };
-    const ensured = await ensureSampleBlock(draftNode);
-    draftNode = ensured.draftNode;
-    const sampleBlock = ensured.sampleBlock;
-    if (!sampleBlock) return { ok: false, error: 'No Draft.js sample block' };
-
     const editorState = draftNode.props.editorState;
     const EditorState = editorState.constructor;
     const SelectionState = editorState.getSelection().constructor;
     let contentState = editorState.getCurrentContent();
     const blockMap = contentState.getBlockMap();
+    const sampleBlock = findDraftSampleBlock(draftNode);
+    if (!sampleBlock) return { ok: false, error: 'No Draft.js sample block' };
+
     const CharacterList = sampleBlock.getCharacterList().constructor;
     let nextBlockMap = blockMap.constructor();
     const createdKeys = [];
@@ -189,6 +184,12 @@ window.__xArticleWrite = async function(payload) {
   function markerTokenPattern(prefix) {
     const p = String(prefix || '__XPOSTER_').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(p + '[A-Z]+_\\d+__', 'g');
+  }
+
+  // 兜底：匹配任意 session id 的 marker（__XPOSTER_<id>_<TYPE>_<n>__），
+  // 防止 markerPrefix 传递异常时漏掉封面等未经 replaceMarkerText 精确清理的 marker
+  function allMarkerTokenPattern() {
+    return /__XPOSTER_[A-Za-z0-9]+_[A-Z]+_\d+__/g;
   }
 
   function findMarkerLocation(contentState, marker) {
@@ -306,7 +307,12 @@ window.__xArticleWrite = async function(payload) {
     blockMap.forEach((block, key) => {
       if (block.getType() === 'atomic') return;
       const text = block.getText() || '';
-      const cleaned = text.replace(mp, '').replace(/\s{2,}/g, ' ').trim();
+      if (!text.includes('__XPOSTER_')) return;
+      const cleaned = text
+        .replace(mp, '')
+        .replace(allMarkerTokenPattern(), '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
       if (!cleaned) toDelete.push(key);
       else if (cleaned !== text) replacements.push({ key, text: cleaned });
     });
@@ -360,66 +366,69 @@ window.__xArticleWrite = async function(payload) {
     const onFilesAdded = findOnFilesAdded();
     if (!onFilesAdded) return { ok: false, error: 'X upload handler not found' };
 
+    // Place cursor at marker — X's onFilesAdded inserts at cursor position
     const markerLoc = placeSelectionAtMarker(draftNode, marker);
     if (!markerLoc) return { ok: false, error: 'Marker not found in editor' };
     await sleep(80);
 
-    // Track EXISTING media ENTITIES (not block keys — block keys change on React re-render)
-    const beforeEntities = new Set();
-    {
-      const cs = draftNode.props.editorState.getCurrentContent();
-      cs.getBlockMap().forEach((block) => {
-        if (block.getType() !== 'atomic') return;
-        block.findEntityRanges(
-          (ch) => Boolean(ch.getEntity()),
-          (start) => {
-            const ek = block.getCharacterList().get(start)?.getEntity?.();
-            if (!ek) return;
-            try { if (cs.getEntity(ek).getType() === 'MEDIA') beforeEntities.add(ek); } catch {}
-          }
-        );
-      });
+    let file;
+    try {
+      file = base64ToFile(imagePayload.base64, imagePayload.fileName, imagePayload.mime);
+    } catch (e) {
+      return { ok: false, error: `Invalid base64: ${e.message}` };
     }
 
-    let file;
-    try { file = base64ToFile(imagePayload.base64, imagePayload.fileName, imagePayload.mime); }
-    catch (e) { return { ok: false, error: `Invalid base64: ${e.message}` }; }
+    // Get existing atomic blocks before upload (to detect new ones)
+    const before = new Set();
+    draftNode.props.editorState.getCurrentContent().getBlockMap().forEach((block, key) => {
+      if (block.getType() === 'atomic') before.add(key);
+    });
 
+    // Upload — image lands at marker position
     try { onFilesAdded([file]); } catch (e) {
       return { ok: false, error: `Upload call failed: ${e.message}` };
     }
 
-    // Wait for NEW media entity to appear (entity-key based, like xPoster)
+    // Wait for the upload to complete (new atomic block appears)
     const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
-      await sleep(350);
+      await sleep(500);
       draftNode = findDraftStateNode() || draftNode;
       if (!draftNode) continue;
-      const cs = draftNode.props.editorState.getCurrentContent();
-      let found = null;
-      cs.getBlockMap().forEach((block, blockKey) => {
-        if (found || block.getType() !== 'atomic') return;
-        block.findEntityRanges(
-          (ch) => Boolean(ch.getEntity()),
-          (start) => {
-            if (found) return;
-            const ek = block.getCharacterList().get(start)?.getEntity?.();
-            if (!ek || beforeEntities.has(ek)) return;
-            try {
-              if (cs.getEntity(ek).getType() !== 'MEDIA') return;
-              const data = cs.getEntity(ek).getData();
-              const mediaId = mediaIdFromData(data);
-              found = { entityKey: ek, blockKey, mediaId };
-            } catch {}
-          }
-        );
+      const contentState = draftNode.props.editorState.getCurrentContent();
+      let newBlock = null;
+      contentState.getBlockMap().forEach((block, key) => {
+        if (block.getType() === 'atomic' && !before.has(key)) {
+          newBlock = { blockKey: key, block };
+        }
       });
-      if (found?.mediaId) {
+      if (newBlock) {
+        let mediaId = null, entityKey = null;
+        try {
+          newBlock.block.findEntityRanges(
+            (ch) => Boolean(ch.getEntity()),
+            (start) => { entityKey = newBlock.block.getCharacterList().get(start)?.getEntity?.(); }
+          );
+          if (entityKey) {
+            const entity = contentState.getEntity(entityKey);
+            const data = entity.getData();
+            const searchForId = (d, depth) => {
+              if (depth > 5 || d == null) return null;
+              if (typeof d === 'string' && /^\d+$/.test(d.trim())) return d.trim();
+              if (typeof d !== 'object') return null;
+              const keys = ['mediaId', 'media_id', 'media_id_string', 'id_str', 'id'];
+              for (const k of keys) { if (d[k] && /^\d+/.test(String(d[k]))) return String(d[k]); }
+              for (const v of Object.values(d)) { const r = searchForId(v, depth + 1); if (r) return r; }
+              return null;
+            };
+            mediaId = searchForId(data, 0);
+          }
+        } catch (e) { /* best-effort */ }
         return {
           ok: true,
-          blockKey: found.blockKey,
-          entityKey: found.entityKey,
-          mediaId: found.mediaId,
+          blockKey: newBlock.blockKey,
+          entityKey,
+          mediaId,
           markerBlock: markerLoc.blockKey,
           markerOffset: markerLoc.offset,
           markerLength: markerLoc.length,
@@ -430,109 +439,166 @@ window.__xArticleWrite = async function(payload) {
     return { ok: false, error: 'Upload timed out waiting for media entity' };
   }
 
-  function mediaIdFromData(data) {
-    const search = (d, depth) => {
-      if (depth > 5 || d == null) return null;
-      if (typeof d === 'string' && /^\d+$/.test(d.trim())) return d.trim();
-      if (typeof d !== 'object') return null;
-      const keys = ['mediaId', 'mediaID', 'media_id', 'media_id_string', 'mediaIdString', 'mediaKey', 'id_str', 'id', 'rest_id'];
-      for (const k of keys) { if (d[k] && /^\d+/.test(String(d[k]))) return String(d[k]); }
-      for (const v of Object.values(d)) { const r = search(v, depth + 1); if (r) return r; }
-      return null;
-    };
-    return search(data, 0);
+  // ── Block deletion by key ─────────────────────────────
+  function deleteBlockByKey(draftNode, blockKey) {
+    if (!blockKey) return { ok: false, error: 'Missing block key' };
+    const editorState = draftNode.props.editorState;
+    const EditorState = editorState.constructor;
+    const SelectionState = editorState.getSelection().constructor;
+    const contentState = editorState.getCurrentContent();
+    const blockMap = contentState.getBlockMap();
+    if (!blockMap.has(blockKey)) return { ok: false, error: 'Block not found' };
+    const nextBlockMap = blockMap.delete(blockKey);
+    const lastKey = nextBlockMap.last()?.getKey?.();
+    const selection = lastKey ? SelectionState.createEmpty(lastKey) : editorState.getSelection();
+    const nextContent = contentState
+      .set('blockMap', nextBlockMap)
+      .set('selectionBefore', selection)
+      .set('selectionAfter', selection);
+    let ns = EditorState.push(editorState, nextContent, 'remove-range');
+    ns = EditorState.moveSelectionToEnd(ns);
+    draftNode.props.onChange(ns);
+    return { ok: true };
   }
 
-  // ── Image Relocation ──────────────────────────────────
-  function relocateImages(draftNode, uploads) {
+  // 重新定位某张已上传图片对应的 atomic 媒体块：优先 blockKey，失效则按 entityKey / mediaId 兜底
+  // （X 完成上传后可能给块换 key，导致缓存的 blockKey 失效）
+  function findMediaBlockKey(draftNode, upload) {
+    const contentState = draftNode.props.editorState.getCurrentContent();
+    const blockMap = contentState.getBlockMap();
+    if (upload.blockKey && blockMap.has(upload.blockKey)) return upload.blockKey;
+    let found = null;
+    blockMap.forEach((block, key) => {
+      if (found || block.getType() !== 'atomic') return;
+      block.findEntityRanges(
+        (ch) => Boolean(ch.getEntity()),
+        (start) => {
+          if (found) return;
+          const ek = block.getCharacterList().get(start)?.getEntity?.();
+          if (!ek) return;
+          if (upload.entityKey && ek === upload.entityKey) { found = key; return; }
+          if (upload.mediaId) {
+            try {
+              const data = contentState.getEntity(ek).getData();
+              if (JSON.stringify(data || {}).includes(String(upload.mediaId))) found = key;
+            } catch {}
+          }
+        }
+      );
+    });
+    return found;
+  }
+
+  // ── Image Relocation (xPoster: 把上传的图片 atomic 块搬到 marker 位置) ──
+  function relocateImages(draftNode, uploads, protectedAtomicBlocks) {
     if (!uploads.length) return { moved: 0, missing: 0 };
     const editorState = draftNode.props.editorState;
     const EditorState = editorState.constructor;
     const SelectionState = editorState.getSelection().constructor;
     const contentState = editorState.getCurrentContent();
     const blockMap = contentState.getBlockMap();
-    const moves = new Map();
-    let missing = 0;
-
-    // Find marker locations
-    for (const upload of uploads) {
-      const loc = findMarkerLocation(contentState, upload.marker);
-      console.log(LOG, 'relocateImages: marker', upload.marker, 'found:', !!loc, loc ? `block=${loc.blockKey} off=${loc.offset}` : 'NOT FOUND');
-      if (loc) {
-        upload.markerBlock = loc.blockKey;
-      }
-    }
-
-    // Find all media atomic blocks with entity mapping
     const entityToBlock = new Map();
     const mediaBlocks = [];
-    blockMap.forEach((block, key) => {
-      if (block.getType() !== 'atomic') return;
-      try {
-        let firstEntity = null;
-        block.findEntityRanges(
-          (ch) => Boolean(ch.getEntity()),
-          (start) => {
-            const ek = block.getCharacterList().get(start)?.getEntity?.();
-            if (ek) {
-              firstEntity = firstEntity || ek;
-              entityToBlock.set(ek, key);
-            }
-          }
-        );
-        if (firstEntity) {
-          try {
-            if (contentState.getEntity(firstEntity).getType() === 'MEDIA') {
-              mediaBlocks.push({ blockKey: key, entityKey: firstEntity });
-            }
-          } catch {}
-        }
-      } catch {}
-    });
 
-    // Match markers to media blocks
-    let fb = 0;
+    // 重新定位 marker（块可能因前面的搬运/清理而变化）
     for (const upload of uploads) {
-      if (!upload.markerBlock || !blockMap.has(upload.markerBlock)) { 
-        console.log(LOG, 'relocateImages: SKIP upload, markerBlock invalid', upload.markerBlock, 'has:', blockMap.has(upload.markerBlock));
-        missing++; continue; 
-      }
-      let imgBlock = upload.blockKey && blockMap.has(upload.blockKey) ? upload.blockKey : null;
-      if (!imgBlock && upload.entityKey) imgBlock = entityToBlock.get(upload.entityKey) || null;
-      if (!imgBlock) {
-        while (fb < mediaBlocks.length && Array.from(moves.values()).some(m => m.imageBlock === mediaBlocks[fb].blockKey)) fb++;
-        if (fb < mediaBlocks.length) imgBlock = mediaBlocks[fb++].blockKey;
-      }
-      console.log(LOG, 'relocateImages: upload blockKey=', upload.blockKey, 'entityKey=', upload.entityKey, 'imgBlock=', imgBlock, 'markerBlock=', upload.markerBlock, 'same:', imgBlock === upload.markerBlock, 'mediaBlocks count:', mediaBlocks.length);
-      if (!imgBlock) { missing++; continue; }
-      if (imgBlock !== upload.markerBlock) {
-        moves.set(upload.markerBlock, { imageBlock: imgBlock, markerExact: true });
+      if (upload.markerBlock && blockMap.has(upload.markerBlock)) continue;
+      const loc = findMarkerLocation(contentState, upload.marker);
+      if (loc) {
+        upload.markerBlock = loc.blockKey;
+        upload.markerOffset = loc.offset;
+        upload.markerLength = loc.length;
+        upload.markerExact = loc.exact;
       }
     }
 
-    console.log(LOG, 'relocateImages: moves.size=', moves.size, 'missing=', missing);
+    // 收集所有"非受保护"的 MEDIA atomic 块（受保护的是推文/代码/分割线等）
+    blockMap.forEach((block, blockKey) => {
+      if (block.getType() !== 'atomic') return;
+      let firstEntity = null;
+      block.findEntityRanges(
+        (ch) => Boolean(ch.getEntity()),
+        (start) => {
+          const ek = block.getCharacterList().get(start)?.getEntity?.();
+          if (ek) {
+            firstEntity = firstEntity || ek;
+            entityToBlock.set(ek, blockKey);
+          }
+        }
+      );
+      if (protectedAtomicBlocks && protectedAtomicBlocks.has(blockKey)) return;
+      if (firstEntity) {
+        try {
+          if (contentState.getEntity(firstEntity).getType() === 'MEDIA') {
+            mediaBlocks.push({ blockKey, entityKey: firstEntity });
+          }
+        } catch {}
+      }
+    });
+
+    const moves = new Map();
+    let missing = 0;
+    let fallbackIndex = 0;
+
+    for (const upload of uploads) {
+      if (!upload.markerBlock || !blockMap.has(upload.markerBlock)) { missing++; continue; }
+      let imageBlock = upload.blockKey && blockMap.has(upload.blockKey) ? upload.blockKey : null;
+      if (!imageBlock && upload.entityKey) imageBlock = entityToBlock.get(upload.entityKey) || null;
+      if (!imageBlock) {
+        while (fallbackIndex < mediaBlocks.length && moves.has(mediaBlocks[fallbackIndex].blockKey)) fallbackIndex++;
+        imageBlock = mediaBlocks[fallbackIndex]?.blockKey || null;
+        fallbackIndex++;
+      }
+      if (!imageBlock) { missing++; continue; }
+      if (imageBlock !== upload.markerBlock) {
+        moves.set(upload.markerBlock, { imageBlock, markerExact: upload.markerExact !== false });
+      }
+    }
 
     if (!moves.size) return { moved: 0, missing };
 
-    // Reorder blocks
-    const destBlocks = new Set(Array.from(moves.values()).map(m => m.imageBlock));
-    const ordered = [];
+    const destinationBlocks = new Set(Array.from(moves.values()).map((m) => m.imageBlock));
+    const orderedKeys = [];
     blockMap.forEach((block, key) => {
       if (moves.has(key)) {
-        const m = moves.get(key);
-        ordered.push(m.imageBlock);
-        if (!m.markerExact) ordered.push(key);
-      } else if (!destBlocks.has(key)) ordered.push(key);
+        const move = moves.get(key);
+        if (move.markerExact) {
+          orderedKeys.push(move.imageBlock);
+        } else {
+          orderedKeys.push(move.imageBlock);
+          orderedKeys.push(key);
+        }
+      } else if (!destinationBlocks.has(key)) {
+        orderedKeys.push(key);
+      }
     });
 
     let nextBM = blockMap.constructor();
-    for (const k of ordered) nextBM = nextBM.set(k, blockMap.get(k));
-    const sel = SelectionState.createEmpty(ordered[ordered.length - 1]);
+    for (const k of orderedKeys) nextBM = nextBM.set(k, blockMap.get(k));
+    const sel = SelectionState.createEmpty(orderedKeys[orderedKeys.length - 1]);
     const nc = contentState.set('blockMap', nextBM).set('selectionBefore', sel).set('selectionAfter', sel);
     let ns = EditorState.push(editorState, nc, 'remove-range');
     ns = EditorState.moveSelectionToEnd(ns);
     draftNode.props.onChange(ns);
     return { moved: moves.size, missing };
+  }
+
+  // 每张图上传后：先把图片块搬到 marker 处，再清掉 marker 文本（xPoster 流程）
+  async function settleUploadedImageAtMarker(draftNode, upload, protectedAtomicBlocks) {
+    if (!upload || upload.coverOnly) {
+      return { draftNode, moved: 0, missing: 0, markerCleaned: 0 };
+    }
+    const relocateResult = relocateImages(draftNode, [upload], protectedAtomicBlocks);
+    if (relocateResult.moved || relocateResult.missing) {
+      await sleep(180);
+      draftNode = findDraftStateNode() || draftNode;
+    }
+    const markerCleaned = relocateResult.missing ? 0 : Number(replaceMarkerText(draftNode, upload.marker, ''));
+    if (markerCleaned) {
+      await sleep(120);
+      draftNode = findDraftStateNode() || draftNode;
+    }
+    return { draftNode, moved: relocateResult.moved, missing: relocateResult.missing, markerCleaned };
   }
 
   // ── Title & Cover ─────────────────────────────────────
@@ -634,7 +700,7 @@ window.__xArticleWrite = async function(payload) {
     const summary = {
       atomicOk: 0, atomicFail: 0,
       imgOk: 0, imgFail: 0,
-      markersCleaned: 0,
+      markersCleaned: 0, relocatedImages: 0,
       title: { requested: !!p.title, value: p.title || null, ui: null, graphql: null },
       cover: { requested: !!p.cover, source: p.cover || null, graphql: null }
     };
@@ -653,7 +719,9 @@ window.__xArticleWrite = async function(payload) {
 
       // ── Write blocks ──
       console.log(LOG, 'Writing content blocks...');
-      const wr = await writeDraftBlocks(draftNode, p.blocks);
+      // 空编辑器先造出字符样本，否则 writeDraftBlocks 必失败、降级 HTML 粘贴导致图片落位错乱
+      draftNode = await ensureDraftCharacterSample(draftNode) || draftNode;
+      const wr = writeDraftBlocks(draftNode, p.blocks);
       if (!wr.ok) {
         // Fallback: paste HTML
         console.log(LOG, 'Block write failed, trying HTML paste...');
@@ -679,8 +747,15 @@ window.__xArticleWrite = async function(payload) {
         const ar = insertAtomicBatch(draftNode, atomicOps);
         summary.atomicOk = ar.ok;
         summary.atomicFail = ar.fail;
-        await sleep(300);
+        await sleep(350);
       }
+
+      // 受保护的 atomic 块（推文/代码/分割线等），relocate 时不能把它们当图片搬运
+      draftNode = findDraftStateNode() || draftNode;
+      const protectedAtomicBlocks = new Set();
+      draftNode.props.editorState.getCurrentContent().getBlockMap().forEach((block, key) => {
+        if (block.getType() === 'atomic') protectedAtomicBlocks.add(key);
+      });
 
       // ── Images ──
       const imageOps = (p.plan || []).filter(item => item.op.type === 'image');
@@ -699,7 +774,7 @@ window.__xArticleWrite = async function(payload) {
         console.log(LOG, `Uploading image ${i + 1}/${imageOps.length}...`);
         draftNode = findDraftStateNode() || draftNode;
         const ur = await uploadSingleImage(draftNode, imgPayload, op.marker, i + 1, imageOps.length);
-        
+
         if (ur.ok) {
           summary.imgOk++;
           const upload = {
@@ -707,67 +782,94 @@ window.__xArticleWrite = async function(payload) {
             blockKey: ur.blockKey,
             entityKey: ur.entityKey,
             markerBlock: ur.markerBlock,
+            markerOffset: ur.markerOffset,
+            markerLength: ur.markerLength,
+            markerExact: ur.markerExact,
             mediaId: ur.mediaId,
             source: imgPayload.source,
             coverOnly: !!imgPayload.coverOnly,
-            settled: false
+            settled: !!imgPayload.coverOnly
           };
-
-          if (!upload.coverOnly) {
-            // Relocate image to marker position
-            await sleep(300);
-            draftNode = findDraftStateNode() || draftNode;
-            const relResult = relocateImages(draftNode, [upload]);
-            // Refresh draftNode BEFORE marker cleanup (so it sees relocated state)
-            if (relResult.moved) {
-              await sleep(150);
-              draftNode = findDraftStateNode() || draftNode;
-            }
-            if (!relResult.missing) replaceMarkerText(draftNode, op.marker, '');
-            upload.settled = !relResult.missing;
-          }
-
           uploads.push(upload);
 
+          // 关键：把刚上传的图片块搬到 marker 位置，再清掉 marker（xPoster 流程）
+          if (!upload.coverOnly) {
+            const settleResult = await settleUploadedImageAtMarker(draftNode, upload, protectedAtomicBlocks);
+            draftNode = settleResult.draftNode;
+            summary.relocatedImages = (summary.relocatedImages || 0) + settleResult.moved;
+            summary.markersCleaned += settleResult.markerCleaned;
+            upload.settled = !settleResult.missing;
+          }
+
           if (imgPayload.coverOnly && !coverUpload) coverUpload = upload;
-          
-          // Set cover if this image matches the cover
-          if (p.cover && upload.source && imageSourcesMatch(upload.source, p.cover) && upload.mediaId && articleId) {
+          // 封面图块加入受保护集合，避免被后续 body 图片的 relocate 当成备用目标误搬
+          if (upload.coverOnly && upload.blockKey) protectedAtomicBlocks.add(upload.blockKey);
+
+          // 命中封面 → 设置封面
+          if (p.cover && upload.source && imageSourcesMatch(upload.source, p.cover) && upload.mediaId && articleId && !summary.cover.graphql) {
             coverUpload = upload;
             const cr = await updateCoverGraphql(articleId, upload.mediaId);
             summary.cover.graphql = cr;
           }
         } else {
           summary.imgFail++;
-          replaceMarkerText(draftNode, op.marker, imgPayload.fallbackText || '[image upload failed]');
+          replaceMarkerText(draftNode, op.marker, imgPayload.fallbackText || (imgPayload.coverOnly ? '' : '[image upload failed]'));
         }
         draftNode = findDraftStateNode() || draftNode;
       }
 
-      // ── Cover-only block cleanup ──
-
-      // ── Clean up cover-only block ──
-      if (coverUpload?.coverOnly && coverUpload.blockKey) {
-        await sleep(300);
+      // ── 兜底：对没 settle 成功的图片再批量 relocate 一次 ──
+      const unsettledUploads = uploads.filter((u) => !u.coverOnly && !u.settled);
+      if (unsettledUploads.length) {
+        console.log(LOG, `Reordering ${unsettledUploads.length} remaining image(s)...`);
+        await sleep(900);
         draftNode = findDraftStateNode() || draftNode;
-        const editorState = draftNode.props.editorState;
-        const EditorState = editorState.constructor;
-        const contentState = editorState.getCurrentContent();
-        if (contentState.getBlockMap().has(coverUpload.blockKey)) {
-          const nextBM = contentState.getBlockMap().delete(coverUpload.blockKey);
-          const lastKey = nextBM.last()?.getKey?.();
-          const sel = lastKey ? editorState.getSelection().constructor.createEmpty(lastKey) : editorState.getSelection();
-          const nc = contentState.set('blockMap', nextBM).set('selectionBefore', sel).set('selectionAfter', sel);
-          let ns = EditorState.push(editorState, nc, 'remove-range');
-          ns = EditorState.moveSelectionToEnd(ns);
-          draftNode.props.onChange(ns);
-        }
+        const rr = relocateImages(draftNode, unsettledUploads, protectedAtomicBlocks);
+        summary.relocatedImages = (summary.relocatedImages || 0) + rr.moved;
+        await sleep(400);
       }
 
-      // ── Cleanup markers ──
+      // ── 封面专用图片：从正文删除图片块 + 清掉封面 marker（封面只走 GraphQL，不该出现在正文） ──
+      // X 的图片上传是异步的，删早了会被重新插回，所以这里多轮重试；整体 try/catch 隔离，
+      // 绝不能让封面清理的异常带崩后面的 marker 清理。
+      if (coverUpload?.coverOnly) {
+        try {
+          let deleted = false;
+          for (let attempt = 0; attempt < 4; attempt++) {
+            await sleep(attempt === 0 ? 700 : 600);
+            draftNode = findDraftStateNode() || draftNode;
+            const coverBlockKey = findMediaBlockKey(draftNode, coverUpload);
+            if (coverBlockKey) {
+              const del = deleteBlockByKey(draftNode, coverBlockKey);
+              summary.cover.bodyBlockDeleted = del;
+              draftNode = findDraftStateNode() || draftNode;
+              if (del.ok) deleted = true;
+            } else if (deleted) {
+              // 已删且不再出现 → 稳定，收工
+              break;
+            } else {
+              summary.cover.bodyBlockDeleted = { ok: false, error: 'cover media block not found' };
+            }
+          }
+        } catch (e) {
+          summary.cover.bodyBlockDeleted = { ok: false, error: 'cover cleanup threw: ' + (e?.message || e) };
+        }
+        // 显式按精确字符串清掉封面 marker（兜底，不依赖 cleanupMarkers 的前缀匹配）
+        try {
+          if (coverUpload.marker) {
+            draftNode = findDraftStateNode() || draftNode;
+            replaceMarkerText(draftNode, coverUpload.marker, '');
+            draftNode = findDraftStateNode() || draftNode;
+          }
+        } catch (e) { /* 交给最终 cleanupMarkers 兜底 */ }
+      }
+
+      // ── Cleanup markers（始终执行，最后的安全网）──
       console.log(LOG, 'Cleaning markers...');
-      draftNode = findDraftStateNode() || draftNode;
-      summary.markersCleaned = cleanupMarkers(draftNode, p.markerPrefix);
+      try {
+        draftNode = findDraftStateNode() || draftNode;
+        summary.markersCleaned += cleanupMarkers(draftNode, p.markerPrefix);
+      } catch (e) { console.warn(LOG, 'cleanupMarkers failed', e); }
 
       return { ok: true, summary };
 

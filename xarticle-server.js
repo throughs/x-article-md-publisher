@@ -144,6 +144,10 @@ ${autoSection}
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  // 动态接口（引擎/数据）每次发布都会变，禁止浏览器缓存，否则点导入跑的还是上次缓存的旧引擎
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   
   const reqUrl = url.parse(req.url, true);
   const p = reqUrl.pathname;
