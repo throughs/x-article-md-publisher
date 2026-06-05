@@ -649,13 +649,12 @@ window.__xArticleWrite = async function(payload) {
           };
 
           if (!upload.coverOnly) {
-            // Try to replace marker and relocate
+            // Record marker location, don't replace yet — let relocateImages handle it
             await sleep(300);
             draftNode = findDraftStateNode() || draftNode;
             const loc = findMarkerLocation(draftNode.props.editorState.getCurrentContent(), op.marker);
             upload.markerBlock = loc?.blockKey || null;
-            replaceMarkerText(draftNode, op.marker, '');
-            upload.settled = true;
+            // marker text cleaned by cleanupMarkers at the end
           }
 
           uploads.push(upload);
@@ -675,13 +674,13 @@ window.__xArticleWrite = async function(payload) {
         draftNode = findDraftStateNode() || draftNode;
       }
 
-      // ── Relocate remaining images ──
-      const unsettled = uploads.filter(u => !u.coverOnly && !u.settled);
-      if (unsettled.length) {
-        console.log(LOG, 'Relocating images...');
+      // ── Relocate all non-cover images: move from bottom to marker positions ──
+      const toRelocate = uploads.filter(u => !u.coverOnly);
+      if (toRelocate.length) {
+        console.log(LOG, `Relocating ${toRelocate.length} images...`);
         await sleep(500);
         draftNode = findDraftStateNode() || draftNode;
-        relocateImages(draftNode, unsettled);
+        relocateImages(draftNode, toRelocate);
       }
 
       // ── Clean up cover-only block ──
