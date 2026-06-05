@@ -313,9 +313,30 @@ window.__xArticleWrite = async function(payload) {
     return new File([bytes], fileName, { type: mime });
   }
 
-  async function uploadSingleImage(draftNode, imagePayload, index, total) {
+  // ── Place cursor at marker before upload (xPoster technique) ──
+  function placeSelectionAtMarker(draftNode, marker) {
+    const editorState = draftNode.props.editorState;
+    const SelectionState = editorState.getSelection().constructor;
+    const EditorState = editorState.constructor;
+    const contentState = editorState.getCurrentContent();
+    const location = findMarkerLocation(contentState, marker);
+    if (!location) return null;
+    const selection = SelectionState.createEmpty(location.blockKey).merge({
+      anchorOffset: location.offset,
+      focusOffset: location.offset
+    });
+    draftNode.props.onChange(EditorState.forceSelection(editorState, selection));
+    return location;
+  }
+
+  async function uploadSingleImage(draftNode, imagePayload, marker, index, total) {
     const onFilesAdded = findOnFilesAdded();
     if (!onFilesAdded) return { ok: false, error: 'X upload handler not found' };
+
+    // Place cursor at marker — X's onFilesAdded inserts at cursor position
+    const markerLoc = placeSelectionAtMarker(draftNode, marker);
+    if (!markerLoc) return { ok: false, error: 'Marker not found in editor' };
+    await sleep(80);
 
     let file;
     try {
@@ -330,9 +351,7 @@ window.__xArticleWrite = async function(payload) {
       if (block.getType() === 'atomic') before.add(key);
     });
 
-    // Focus editor and upload
-    const editor = findEditorElement();
-    editor?.focus?.();
+    // Upload — image lands at marker position
     try { onFilesAdded([file]); } catch (e) {
       return { ok: false, error: `Upload call failed: ${e.message}` };
     }
@@ -351,10 +370,8 @@ window.__xArticleWrite = async function(payload) {
         }
       });
       if (newBlock) {
-        // Try to extract media ID
-        let mediaId = null;
+        let mediaId = null, entityKey = null;
         try {
-          let entityKey = null;
           newBlock.block.findEntityRanges(
             (ch) => Boolean(ch.getEntity()),
             (start) => { entityKey = newBlock.block.getCharacterList().get(start)?.getEntity?.(); }
@@ -362,30 +379,27 @@ window.__xArticleWrite = async function(payload) {
           if (entityKey) {
             const entity = contentState.getEntity(entityKey);
             const data = entity.getData();
-            // Search for media ID in entity data
             const searchForId = (d, depth) => {
               if (depth > 5 || d == null) return null;
               if (typeof d === 'string' && /^\d+$/.test(d.trim())) return d.trim();
               if (typeof d !== 'object') return null;
               const keys = ['mediaId', 'media_id', 'media_id_string', 'id_str', 'id'];
-              for (const k of keys) {
-                if (d[k] && /^\d+/.test(String(d[k]))) return String(d[k]);
-              }
-              for (const v of Object.values(d)) {
-                const r = searchForId(v, depth + 1);
-                if (r) return r;
-              }
+              for (const k of keys) { if (d[k] && /^\d+/.test(String(d[k]))) return String(d[k]); }
+              for (const v of Object.values(d)) { const r = searchForId(v, depth + 1); if (r) return r; }
               return null;
             };
             mediaId = searchForId(data, 0);
           }
-        } catch (e) { /* media ID extraction is best-effort */ }
+        } catch (e) { /* best-effort */ }
         return {
           ok: true,
           blockKey: newBlock.blockKey,
-          entityKey: null,
+          entityKey,
           mediaId,
-          markerBlock: null
+          markerBlock: markerLoc.blockKey,
+          markerOffset: markerLoc.offset,
+          markerLength: markerLoc.length,
+          markerExact: markerLoc.exact
         };
       }
     }
@@ -633,7 +647,7 @@ window.__xArticleWrite = async function(payload) {
 
         console.log(LOG, `Uploading image ${i + 1}/${imageOps.length}...`);
         draftNode = findDraftStateNode() || draftNode;
-        const ur = await uploadSingleImage(draftNode, imgPayload, i + 1, imageOps.length);
+        const ur = await uploadSingleImage(draftNode, imgPayload, op.marker, i + 1, imageOps.length);
         
         if (ur.ok) {
           summary.imgOk++;
@@ -641,7 +655,7 @@ window.__xArticleWrite = async function(payload) {
             marker: op.marker,
             blockKey: ur.blockKey,
             entityKey: ur.entityKey,
-            markerBlock: null,
+            markerBlock: ur.markerBlock,
             mediaId: ur.mediaId,
             source: imgPayload.source,
             coverOnly: !!imgPayload.coverOnly,
@@ -649,12 +663,9 @@ window.__xArticleWrite = async function(payload) {
           };
 
           if (!upload.coverOnly) {
-            // Record marker location, don't replace yet — let relocateImages handle it
-            await sleep(300);
-            draftNode = findDraftStateNode() || draftNode;
-            const loc = findMarkerLocation(draftNode.props.editorState.getCurrentContent(), op.marker);
-            upload.markerBlock = loc?.blockKey || null;
-            // marker text cleaned by cleanupMarkers at the end
+            // Image landed at marker position — just clean up marker text
+            replaceMarkerText(draftNode, op.marker, '');
+            upload.settled = true;
           }
 
           uploads.push(upload);
@@ -674,14 +685,7 @@ window.__xArticleWrite = async function(payload) {
         draftNode = findDraftStateNode() || draftNode;
       }
 
-      // ── Relocate all non-cover images: move from bottom to marker positions ──
-      const toRelocate = uploads.filter(u => !u.coverOnly);
-      if (toRelocate.length) {
-        console.log(LOG, `Relocating ${toRelocate.length} images...`);
-        await sleep(500);
-        draftNode = findDraftStateNode() || draftNode;
-        relocateImages(draftNode, toRelocate);
-      }
+      // ── Cover-only block cleanup ──
 
       // ── Clean up cover-only block ──
       if (coverUpload?.coverOnly && coverUpload.blockKey) {
