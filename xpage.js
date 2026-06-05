@@ -80,16 +80,24 @@ window.__xArticleWrite = async function(payload) {
   }
 
   // When editor is empty, bootstrap by inserting a space so we have a character sample
-  function ensureSampleBlock(draftNode) {
+  async function ensureSampleBlock(draftNode) {
     let sb = findDraftSampleBlock(draftNode);
-    if (sb) return sb;
-    // Empty editor — insert a space, then find sample
+    if (sb) return { draftNode, sampleBlock: sb };
+    // Empty editor — insert a space, wait for React to re-render
     const editor = findEditorElement();
     if (editor) {
       editor.focus();
       document.execCommand('insertText', false, ' ');
     }
-    return findDraftSampleBlock(draftNode);
+    const deadline = Date.now() + 1600;
+    while (Date.now() < deadline) {
+      await sleep(80);
+      const latestNode = findDraftStateNode() || draftNode;
+      sb = findDraftSampleBlock(latestNode);
+      if (sb) return { draftNode: latestNode, sampleBlock: sb };
+    }
+    const fallback = findDraftStateNode() || draftNode;
+    return { draftNode: fallback, sampleBlock: findDraftSampleBlock(fallback) };
   }
 
   // ── Draft.js Content Writing ──────────────────────────
@@ -97,16 +105,18 @@ window.__xArticleWrite = async function(payload) {
     return { Bold: 'BOLD', Italic: 'ITALIC', Strikethrough: 'STRIKETHROUGH', Code: 'CODE' }[style] || style;
   }
 
-  function writeDraftBlocks(draftNode, blocks) {
+  async function writeDraftBlocks(draftNode, blocks) {
     if (!Array.isArray(blocks) || !blocks.length) return { ok: false, error: 'No blocks' };
+    const ensured = await ensureSampleBlock(draftNode);
+    draftNode = ensured.draftNode;
+    const sampleBlock = ensured.sampleBlock;
+    if (!sampleBlock) return { ok: false, error: 'No Draft.js sample block' };
+
     const editorState = draftNode.props.editorState;
     const EditorState = editorState.constructor;
     const SelectionState = editorState.getSelection().constructor;
     let contentState = editorState.getCurrentContent();
     const blockMap = contentState.getBlockMap();
-    const sampleBlock = ensureSampleBlock(draftNode);
-    if (!sampleBlock) return { ok: false, error: 'No Draft.js sample block' };
-
     const CharacterList = sampleBlock.getCharacterList().constructor;
     let nextBlockMap = blockMap.constructor();
     const createdKeys = [];
@@ -643,7 +653,7 @@ window.__xArticleWrite = async function(payload) {
 
       // ── Write blocks ──
       console.log(LOG, 'Writing content blocks...');
-      const wr = writeDraftBlocks(draftNode, p.blocks);
+      const wr = await writeDraftBlocks(draftNode, p.blocks);
       if (!wr.ok) {
         // Fallback: paste HTML
         console.log(LOG, 'Block write failed, trying HTML paste...');
