@@ -350,69 +350,66 @@ window.__xArticleWrite = async function(payload) {
     const onFilesAdded = findOnFilesAdded();
     if (!onFilesAdded) return { ok: false, error: 'X upload handler not found' };
 
-    // Place cursor at marker — X's onFilesAdded inserts at cursor position
     const markerLoc = placeSelectionAtMarker(draftNode, marker);
     if (!markerLoc) return { ok: false, error: 'Marker not found in editor' };
     await sleep(80);
 
-    let file;
-    try {
-      file = base64ToFile(imagePayload.base64, imagePayload.fileName, imagePayload.mime);
-    } catch (e) {
-      return { ok: false, error: `Invalid base64: ${e.message}` };
+    // Track EXISTING media ENTITIES (not block keys — block keys change on React re-render)
+    const beforeEntities = new Set();
+    {
+      const cs = draftNode.props.editorState.getCurrentContent();
+      cs.getBlockMap().forEach((block) => {
+        if (block.getType() !== 'atomic') return;
+        block.findEntityRanges(
+          (ch) => Boolean(ch.getEntity()),
+          (start) => {
+            const ek = block.getCharacterList().get(start)?.getEntity?.();
+            if (!ek) return;
+            try { if (cs.getEntity(ek).getType() === 'MEDIA') beforeEntities.add(ek); } catch {}
+          }
+        );
+      });
     }
 
-    // Get existing atomic blocks before upload (to detect new ones)
-    const before = new Set();
-    draftNode.props.editorState.getCurrentContent().getBlockMap().forEach((block, key) => {
-      if (block.getType() === 'atomic') before.add(key);
-    });
+    let file;
+    try { file = base64ToFile(imagePayload.base64, imagePayload.fileName, imagePayload.mime); }
+    catch (e) { return { ok: false, error: `Invalid base64: ${e.message}` }; }
 
-    // Upload — image lands at marker position
     try { onFilesAdded([file]); } catch (e) {
       return { ok: false, error: `Upload call failed: ${e.message}` };
     }
 
-    // Wait for the upload to complete (new atomic block appears)
+    // Wait for NEW media entity to appear (entity-key based, like xPoster)
     const deadline = Date.now() + 120000;
     while (Date.now() < deadline) {
-      await sleep(500);
+      await sleep(350);
       draftNode = findDraftStateNode() || draftNode;
       if (!draftNode) continue;
-      const contentState = draftNode.props.editorState.getCurrentContent();
-      let newBlock = null;
-      contentState.getBlockMap().forEach((block, key) => {
-        if (block.getType() === 'atomic' && !before.has(key)) {
-          newBlock = { blockKey: key, block };
-        }
-      });
-      if (newBlock) {
-        let mediaId = null, entityKey = null;
-        try {
-          newBlock.block.findEntityRanges(
-            (ch) => Boolean(ch.getEntity()),
-            (start) => { entityKey = newBlock.block.getCharacterList().get(start)?.getEntity?.(); }
-          );
-          if (entityKey) {
-            const entity = contentState.getEntity(entityKey);
-            const data = entity.getData();
-            const searchForId = (d, depth) => {
-              if (depth > 5 || d == null) return null;
-              if (typeof d === 'string' && /^\d+$/.test(d.trim())) return d.trim();
-              if (typeof d !== 'object') return null;
-              const keys = ['mediaId', 'media_id', 'media_id_string', 'id_str', 'id'];
-              for (const k of keys) { if (d[k] && /^\d+/.test(String(d[k]))) return String(d[k]); }
-              for (const v of Object.values(d)) { const r = searchForId(v, depth + 1); if (r) return r; }
-              return null;
-            };
-            mediaId = searchForId(data, 0);
+      const cs = draftNode.props.editorState.getCurrentContent();
+      let found = null;
+      cs.getBlockMap().forEach((block, blockKey) => {
+        if (found || block.getType() !== 'atomic') return;
+        block.findEntityRanges(
+          (ch) => Boolean(ch.getEntity()),
+          (start) => {
+            if (found) return;
+            const ek = block.getCharacterList().get(start)?.getEntity?.();
+            if (!ek || beforeEntities.has(ek)) return;
+            try {
+              if (cs.getEntity(ek).getType() !== 'MEDIA') return;
+              const data = cs.getEntity(ek).getData();
+              const mediaId = mediaIdFromData(data);
+              found = { entityKey: ek, blockKey, mediaId };
+            } catch {}
           }
-        } catch (e) { /* best-effort */ }
+        );
+      });
+      if (found?.mediaId) {
         return {
           ok: true,
-          blockKey: newBlock.blockKey,
-          entityKey,
-          mediaId,
+          blockKey: found.blockKey,
+          entityKey: found.entityKey,
+          mediaId: found.mediaId,
           markerBlock: markerLoc.blockKey,
           markerOffset: markerLoc.offset,
           markerLength: markerLoc.length,
@@ -421,6 +418,19 @@ window.__xArticleWrite = async function(payload) {
       }
     }
     return { ok: false, error: 'Upload timed out waiting for media entity' };
+  }
+
+  function mediaIdFromData(data) {
+    const search = (d, depth) => {
+      if (depth > 5 || d == null) return null;
+      if (typeof d === 'string' && /^\d+$/.test(d.trim())) return d.trim();
+      if (typeof d !== 'object') return null;
+      const keys = ['mediaId', 'mediaID', 'media_id', 'media_id_string', 'mediaIdString', 'mediaKey', 'id_str', 'id', 'rest_id'];
+      for (const k of keys) { if (d[k] && /^\d+/.test(String(d[k]))) return String(d[k]); }
+      for (const v of Object.values(d)) { const r = search(v, depth + 1); if (r) return r; }
+      return null;
+    };
+    return search(data, 0);
   }
 
   // ── Image Relocation ──────────────────────────────────
