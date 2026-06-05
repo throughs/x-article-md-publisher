@@ -19,60 +19,8 @@ const url = require('url');
 const mdPath = process.argv[2] || 'test_article.md';
 const PORT = parseInt(process.argv[3] || '8765');
 
-const shared = require('./shared.js');
 const XPAGE_JS = fs.readFileSync(path.join(__dirname, 'xpage.js'), 'utf-8');
-
-// ── Build payload ──
-function buildPayload(mdPath) {
-  const markdown = fs.readFileSync(mdPath, 'utf-8');
-  const mdDir = path.dirname(path.resolve(mdPath));
-  const options = { extractTitle: true, extractCover: true };
-  const parsed = shared.parseMarkdown(markdown, options);
-  
-  const imageResults = new Map();
-  for (const seg of parsed.segments) {
-    if (seg.type !== 'image') continue;
-    const src = seg.source;
-    try {
-      if (src.startsWith('data:')) {
-        const uri = shared.parseDataUri(src);
-        if (uri.ok) imageResults.set(seg, { ok: true, ...uri, fileName: shared.guessFileName(src) });
-      } else if (src.startsWith('http')) {
-        imageResults.set(seg, { ok: false, error: 'Remote images unsupported' });
-      } else {
-        const fullPath = src.startsWith('/') ? src : path.resolve(mdDir, src);
-        if (fs.existsSync(fullPath)) {
-          const buf = fs.readFileSync(fullPath);
-          const ext = path.extname(fullPath).toLowerCase();
-          const mimeMap = { '.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp' };
-          imageResults.set(seg, { ok: true, base64: buf.toString('base64'), mime: mimeMap[ext]||'image/png', fileName: path.basename(fullPath), bytes: buf.length });
-        } else { imageResults.set(seg, { ok: false, error: 'Not found: ' + fullPath }); }
-      }
-    } catch (e) { imageResults.set(seg, { ok: false, error: e.message }); }
-  }
-  
-  const planOptions = { coverSource: parsed.cover, coverResult: null };
-  const pastePlan = shared.buildPastePlan(parsed.segments, imageResults, new Map(), planOptions);
-  
-  const imagePayloads = [];
-  for (const op of pastePlan.plan) {
-    if (op.op.type === 'image' && op.op.file?.base64) {
-      imagePayloads.push({
-        marker: op.marker, base64: op.op.file.base64, fileName: op.op.file.fileName,
-        mime: op.op.file.mime, alt: op.op.file.alt||'', coverOnly: !!op.op.coverOnly,
-        fallbackText: op.op.fallbackText||'', source: op.op.source||null
-      });
-    }
-  }
-  
-  return {
-    title: parsed.title || '', cover: parsed.cover || '',
-    html: pastePlan.html, plain: pastePlan.plain,
-    blocks: pastePlan.blocks, plan: pastePlan.plan,
-    markerPrefix: pastePlan.markerPrefix,
-    images: imagePayloads, articleId: null
-  };
-}
+const { buildPayload } = require('./payload.js');
 
 const payload = buildPayload(mdPath);
 

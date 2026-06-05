@@ -144,11 +144,23 @@
     return markdownTitleCandidateFromFileName(options.sourceFileName || options.fileName || "");
   }
 
+  // 解码字面 unicode 转义（YAML 双引号字符串里的 \U0001F680 / \u{1F680} / \uXXXX）
+  // 朴素 frontmatter 解析不会处理这些转义，导致 emoji 变成乱码、标题去重也匹配不上
+  function decodeUnicodeEscapes(value) {
+    if (value == null) return value;
+    const str = String(value);
+    if (str.indexOf("\\") === -1) return str;
+    return str
+      .replace(/\\U([0-9a-fA-F]{8})/g, (m, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch (e) { return m; } })
+      .replace(/\\u\{([0-9a-fA-F]+)\}/g, (m, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch (e) { return m; } })
+      .replace(/\\u([0-9a-fA-F]{4})/g, (m, h) => { try { return String.fromCharCode(parseInt(h, 16)); } catch (e) { return m; } });
+  }
+
   function parseMarkdown(markdown, options = {}) {
     const extractTitle = options.extractTitle !== false && options.setTitle !== false;
     const extractCover = options.extractCover !== false && options.setCover !== false;
     const { body, meta } = parseFrontmatter(markdown);
-    const rawTitle = meta.title || meta.Title || meta["标题"] || null;
+    const rawTitle = decodeUnicodeEscapes(meta.title || meta.Title || meta["标题"] || null);
     // Treat empty/placeholder titles as null → fall through to # heading
     const PLACEHOLDER_TITLES = new Set(["待定", "暂定", "未定", "TBD", "tbd", "TBA", "tba", "WIP", "wip"]);
     const titleFromMeta = (rawTitle && !PLACEHOLDER_TITLES.has(rawTitle.trim()))
@@ -309,12 +321,41 @@
     return spans.sort((left, right) => left.start - right.start);
   }
 
+  // 找出行内代码区间（成对的反引号，长度 1~2；``` 围栏由别处处理）
+  // 用于跳过示例代码里的 ![](...)，避免被当成真图片
+  function findInlineCodeRanges(markdown) {
+    const ranges = [];
+    const runs = [];
+    const re = /`+/g;
+    let m;
+    while ((m = re.exec(markdown)) !== null) {
+      if (m[0].length <= 2) runs.push({ index: m.index, len: m[0].length });
+    }
+    const used = new Array(runs.length).fill(false);
+    for (let i = 0; i < runs.length; i += 1) {
+      if (used[i]) continue;
+      for (let j = i + 1; j < runs.length; j += 1) {
+        if (used[j] || runs[j].len !== runs[i].len) continue;
+        ranges.push({ start: runs[i].index, end: runs[j].index + runs[j].len });
+        used[i] = used[j] = true;
+        break;
+      }
+    }
+    return ranges;
+  }
+
   function findMarkdownImageSpans(markdown) {
     const spans = [];
+    const inlineCode = findInlineCodeRanges(markdown);
+    const insideInlineCode = (pos) => inlineCode.some((r) => pos > r.start && pos < r.end);
     let cursor = 0;
     while (cursor < markdown.length) {
       const start = markdown.indexOf("![", cursor);
       if (start < 0) break;
+      if (insideInlineCode(start)) {
+        cursor = start + 2;
+        continue;
+      }
       const altEnd = findMarkdownClosingBracket(markdown, start + 2);
       if (altEnd < 0 || markdown[altEnd + 1] !== "(") {
         cursor = start + 2;

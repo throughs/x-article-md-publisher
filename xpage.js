@@ -192,6 +192,20 @@ window.__xArticleWrite = async function(payload) {
     return /__XPOSTER_[A-Za-z0-9]+_[A-Z]+_\d+__/g;
   }
 
+  // 统计正文里还残留多少 marker（用于多轮清理判断是否收敛）
+  function countRemainingMarkers(draftNode) {
+    try {
+      const cs = draftNode.props.editorState.getCurrentContent();
+      let n = 0;
+      cs.getBlockMap().forEach((block) => {
+        if (block.getType() === 'atomic') return;
+        const m = (block.getText() || '').match(allMarkerTokenPattern());
+        if (m) n += m.length;
+      });
+      return n;
+    } catch (e) { return 0; }
+  }
+
   function findMarkerLocation(contentState, marker) {
     const needle = String(marker || '');
     if (!needle) return null;
@@ -396,12 +410,27 @@ window.__xArticleWrite = async function(payload) {
       draftNode = findDraftStateNode() || draftNode;
       if (!draftNode) continue;
       const contentState = draftNode.props.editorState.getCurrentContent();
-      let newBlock = null;
+      // 收集本次上传后新增的所有 atomic 块（X 异步处理上一张图时可能同时冒出多个新块）
+      const keyList = [];
+      const candidates = [];
       contentState.getBlockMap().forEach((block, key) => {
-        if (block.getType() === 'atomic' && !before.has(key)) {
-          newBlock = { blockKey: key, block };
-        }
+        keyList.push(key);
+        if (block.getType() === 'atomic' && !before.has(key)) candidates.push(key);
       });
+      let newBlock = null;
+      if (candidates.length) {
+        // 图片是在 marker 光标处插入的，所以选"块顺序上离 marker 最近"的新块，避免抓到上一张图异步重排出来的块
+        let chosen = candidates[0];
+        const markerIdx = markerLoc ? keyList.indexOf(markerLoc.blockKey) : -1;
+        if (markerIdx >= 0 && candidates.length > 1) {
+          let best = Infinity;
+          for (const k of candidates) {
+            const d = Math.abs(keyList.indexOf(k) - markerIdx);
+            if (d < best) { best = d; chosen = k; }
+          }
+        }
+        newBlock = { blockKey: chosen, block: contentState.getBlockMap().get(chosen) };
+      }
       if (newBlock) {
         let mediaId = null, entityKey = null;
         try {
@@ -864,12 +893,33 @@ window.__xArticleWrite = async function(payload) {
         } catch (e) { /* 交给最终 cleanupMarkers 兜底 */ }
       }
 
-      // ── Cleanup markers（始终执行，最后的安全网）──
-      console.log(LOG, 'Cleaning markers...');
-      try {
-        draftNode = findDraftStateNode() || draftNode;
-        summary.markersCleaned += cleanupMarkers(draftNode, p.markerPrefix);
-      } catch (e) { console.warn(LOG, 'cleanupMarkers failed', e); }
+      // ── Cleanup markers（多轮兜底）──
+      // X 的图片上传是异步的，单次清理后回调可能把 marker / 封面块改回来（限流时尤其明显），
+      // 所以这里多轮重试：每轮清 marker + 再删一次可能被重新插回的封面块，直到收敛或轮次用尽。
+      console.log(LOG, 'Cleaning markers (multi-pass)...');
+      for (let pass = 0; pass < 6; pass++) {
+        try {
+          draftNode = findDraftStateNode() || draftNode;
+          summary.markersCleaned += cleanupMarkers(draftNode, p.markerPrefix);
+
+          // 封面块若被重新插回正文，再删
+          if (coverUpload?.coverOnly) {
+            draftNode = findDraftStateNode() || draftNode;
+            const ck = findMediaBlockKey(draftNode, coverUpload);
+            if (ck) {
+              const del = deleteBlockByKey(draftNode, ck);
+              if (del.ok) summary.cover.bodyBlockDeleted = del;
+            }
+          }
+
+          await sleep(450);
+          draftNode = findDraftStateNode() || draftNode;
+          const remaining = countRemainingMarkers(draftNode);
+          const coverStillInBody = coverUpload?.coverOnly ? !!findMediaBlockKey(findDraftStateNode() || draftNode, coverUpload) : false;
+          if (remaining === 0 && !coverStillInBody) break;
+          console.log(LOG, `pass ${pass + 1}: ${remaining} marker(s) left, coverInBody=${coverStillInBody}`);
+        } catch (e) { console.warn(LOG, 'cleanup pass failed', e); break; }
+      }
 
       return { ok: true, summary };
 
