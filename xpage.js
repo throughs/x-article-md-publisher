@@ -424,6 +424,7 @@ window.__xArticleWrite = async function(payload) {
     // Find marker locations
     for (const upload of uploads) {
       const loc = findMarkerLocation(contentState, upload.marker);
+      console.log(LOG, 'relocateImages: marker', upload.marker, 'found:', !!loc, loc ? `block=${loc.blockKey} off=${loc.offset}` : 'NOT FOUND');
       if (loc) {
         upload.markerBlock = loc.blockKey;
       }
@@ -459,18 +460,24 @@ window.__xArticleWrite = async function(payload) {
     // Match markers to media blocks
     let fb = 0;
     for (const upload of uploads) {
-      if (!upload.markerBlock || !blockMap.has(upload.markerBlock)) { missing++; continue; }
+      if (!upload.markerBlock || !blockMap.has(upload.markerBlock)) { 
+        console.log(LOG, 'relocateImages: SKIP upload, markerBlock invalid', upload.markerBlock, 'has:', blockMap.has(upload.markerBlock));
+        missing++; continue; 
+      }
       let imgBlock = upload.blockKey && blockMap.has(upload.blockKey) ? upload.blockKey : null;
       if (!imgBlock && upload.entityKey) imgBlock = entityToBlock.get(upload.entityKey) || null;
       if (!imgBlock) {
         while (fb < mediaBlocks.length && Array.from(moves.values()).some(m => m.imageBlock === mediaBlocks[fb].blockKey)) fb++;
         if (fb < mediaBlocks.length) imgBlock = mediaBlocks[fb++].blockKey;
       }
+      console.log(LOG, 'relocateImages: upload blockKey=', upload.blockKey, 'entityKey=', upload.entityKey, 'imgBlock=', imgBlock, 'markerBlock=', upload.markerBlock, 'same:', imgBlock === upload.markerBlock, 'mediaBlocks count:', mediaBlocks.length);
       if (!imgBlock) { missing++; continue; }
       if (imgBlock !== upload.markerBlock) {
         moves.set(upload.markerBlock, { imageBlock: imgBlock, markerExact: true });
       }
     }
+
+    console.log(LOG, 'relocateImages: moves.size=', moves.size, 'missing=', missing);
 
     if (!moves.size) return { moved: 0, missing };
 
