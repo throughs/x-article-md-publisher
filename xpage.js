@@ -14,6 +14,10 @@ window.__xArticleWrite = async function(payload) {
   const LOG = '[xArticle]';
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+  function articleIdFromUrl() {
+    return location.href.match(/\/articles\/edit\/(\d+)/)?.[1] || null;
+  }
+
   // ── Editor Discovery ──────────────────────────────────
   function findEditorElement() {
     const sel = '[data-contents="true"] [contenteditable="true"], [contenteditable="true"][role="textbox"], [contenteditable="true"].public-DraftEditor-content, [contenteditable="true"]';
@@ -579,7 +583,7 @@ window.__xArticleWrite = async function(payload) {
     let draftNode = findDraftStateNode();
     if (!draftNode) return { ok: false, error: 'Draft.js editor not found. Are you on an X Article edit page?' };
 
-    let articleId = p.articleId || null;
+    let articleId = p.articleId || articleIdFromUrl();
     const summary = {
       atomicOk: 0, atomicFail: 0,
       imgOk: 0, imgFail: 0,
