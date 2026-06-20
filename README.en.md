@@ -8,6 +8,8 @@ It is designed for long-form Markdown articles with local images, remote image U
 
 This project is independent and is not affiliated with, endorsed by, or sponsored by X Corp., Twitter, or xAI.
 
+Author on X: [@fishchang1024](https://x.com/fishchang1024)
+
 ## Project Name
 
 Recommended public repository name:

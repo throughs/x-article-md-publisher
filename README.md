@@ -8,6 +8,8 @@
 
 本项目为独立项目，不隶属于、未获得 X Corp.、Twitter 或 xAI 背书，也不代表这些平台的官方工具。
 
+作者 X 主页：[@fishchang1024](https://x.com/fishchang1024)
+
 ## 项目名称
 
 推荐公开仓库名：
