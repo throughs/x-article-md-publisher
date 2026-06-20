@@ -87,32 +87,11 @@ Then open:
 http://localhost:8765
 ```
 
-## Visual Tutorial
-
-Keep screenshots and recordings under `docs/assets/` and reference them directly from this README.
-
-Recommended file names:
-
-```text
-docs/assets/01-load-extension.png
-docs/assets/02-start-server.png
-docs/assets/03-load-markdown.png
-docs/assets/04-open-x-editor.png
-docs/assets/05-import-progress.png
-docs/assets/xarticle-workflow.mp4
-```
-
-Full workflow video:
-
-<video src="docs/assets/xarticle-workflow.mp4" controls width="100%"></video>
-
-If GitHub does not render the local `.mp4`, upload the video to a GitHub issue, release, or discussion, then replace the `src` with the generated GitHub asset URL.
+## Quick Start Workflow
 
 ### 1. Load The Chrome Extension
 
 Open `chrome://extensions`, enable Developer mode, click "Load unpacked", and select the `extension/` directory.
-
-![Load Chrome extension](docs/assets/01-load-extension.png)
 
 ### 2. Start The Local Server
 
@@ -134,8 +113,6 @@ Windows PowerShell:
 
 Then open `http://localhost:8765`.
 
-![Start local server](docs/assets/02-start-server.png)
-
 ### 3. Load Markdown In The Dashboard
 
 Use one of the three input modes:
@@ -145,8 +122,6 @@ Use one of the three input modes:
 - Paste text: best for copying Markdown text directly into the dashboard.
 
 Optional cover upload is available in the dashboard. You can set a cover by manual upload or Markdown frontmatter `cover`. Without an explicit cover, the first body image stays in the body and is not promoted to cover.
-
-![Load Markdown article](docs/assets/03-load-markdown.png)
 
 ### 4. Open X Articles
 
@@ -158,13 +133,9 @@ https://x.com/compose/articles/new
 
 The local server arms one import trigger, and the Chrome extension reads the article payload from `http://localhost:8765`.
 
-![Open X editor](docs/assets/04-open-x-editor.png)
-
 ### 5. Import Into X
 
 In the X editor, click the floating "载入文章" button. Keep the tab open while text, cover, and images are written into the editor. The progress panel shows the current image count, successful uploads, failed uploads, and retry status.
-
-![Import progress](docs/assets/05-import-progress.png)
 
 ### 6. Review And Publish Manually
 
@@ -267,7 +238,6 @@ Prefer forward slashes or `file:///C:/...` on Windows. Raw backslash paths can w
 - Keep `LICENSE` and `NOTICE`.
 - Keep xPoster attribution in this README.
 - Do not use X, Twitter, or xAI branding in a way that implies official endorsement.
-- Add screenshots or a short demo video under `docs/assets/`.
 - Verify the full import flow with your current Chrome profile and X account.
 
 ## Troubleshooting
