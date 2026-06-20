@@ -93,6 +93,8 @@ http://localhost:8765
 
 打开 `chrome://extensions`，启用开发者模式，点击“加载已解压的扩展程序”，选择项目中的 `extension/` 目录。
 
+![加载 Chrome 扩展](docs/assets/01-load-extension.png)
+
 ### 2. 启动本地服务
 
 不带 Markdown 参数也可以启动。启动后到 dashboard 里载入文章。
@@ -113,6 +115,8 @@ Windows PowerShell：
 
 然后打开 `http://localhost:8765`。
 
+![启动本地服务](docs/assets/02-start-server.png)
+
 ### 3. 在服务页面载入 Markdown
 
 服务页面支持三种来源：
@@ -122,6 +126,8 @@ Windows PowerShell：
 - 粘贴文本：适合直接复制 Markdown 文本到服务页面。
 
 如果需要封面，可以在服务页面手动上传封面图，或在 Markdown frontmatter 中写 `cover`。没有显式封面时，正文首图会保留为正文图片，不会自动变成封面。
+
+![载入 Markdown 文章](docs/assets/03-load-markdown.png)
 
 ### 4. 打开 X Articles 编辑器
 
@@ -133,11 +139,15 @@ https://x.com/compose/articles/new
 
 服务会准备一次导入触发，Chrome 扩展会从 `http://localhost:8765` 读取当前文章 payload。
 
+![打开 X 编辑器](docs/assets/04-open-x-editor.png)
+
 ### 5. 点击扩展按钮导入文章
 
 在 X 文章编辑器页面点击右上角浮动的“载入文章”按钮。导入期间请保持页面打开，工具会依次写入标题、正文、封面和图片。
 
 图片较多时需要等待。进度面板会展示当前图片数量、成功数量、失败数量和重试状态。
+
+![导入进度](docs/assets/05-import-progress.png)
 
 ### 6. 检查草稿并手动发布
 
