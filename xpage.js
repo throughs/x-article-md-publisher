@@ -10,9 +10,133 @@
  *   - X's image upload handler (onFilesAdded)
  */
 
-window.__xArticleWrite = async function(payload) {
+window.__xArticleWrite = async function(payload, options = {}) {
   const LOG = '[xArticle]';
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const progressSession = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  function progressPhaseLabel(phase) {
+    return ({
+      starting: '准备导入',
+      preparing: '准备文章',
+      title: '写入标题',
+      writing_text: '写入正文',
+      atomic: '插入嵌入块',
+      uploading_images: '上传图片',
+      cover: '设置封面',
+      reordering: '整理图片位置',
+      cleanup: '清理占位符',
+      unconfirmed: '未确认完成状态',
+      done: '导入完成',
+      error: '导入失败'
+    })[phase] || '导入中';
+  }
+
+  function ensureInlineProgressPanel() {
+    let panel = document.getElementById('xarticle-progress-panel');
+    if (panel) return panel;
+    panel = document.createElement('div');
+    panel.id = 'xarticle-progress-panel';
+    panel.style.cssText = `
+      position:fixed;top:58px;right:12px;z-index:99997;width:min(320px,calc(100vw - 24px));
+      background:rgba(255,255,255,.96);color:#0f1419;border:1px solid rgba(15,20,25,.10);
+      border-radius:10px;box-shadow:0 10px 26px rgba(15,20,25,.16);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+      overflow:hidden;backdrop-filter:blur(10px);transition:opacity .25s ease;
+    `;
+    panel.innerHTML = `
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;padding:10px 12px 7px">
+        <div style="min-width:0">
+          <div id="xarticle-progress-title" style="font-size:13px;font-weight:760;line-height:1.25">导入中</div>
+          <div id="xarticle-progress-detail" style="margin-top:2px;font-size:11px;color:#536471;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px">正在准备...</div>
+        </div>
+        <div id="xarticle-progress-count" style="font:760 12px ui-monospace,SFMono-Regular,Menlo,monospace;color:#0f766e;white-space:nowrap">--</div>
+      </div>
+      <div style="height:4px;background:#eff3f4;margin:0 12px 9px;border-radius:999px;overflow:hidden">
+        <div id="xarticle-progress-bar" style="height:100%;width:5%;background:#1d9bf0;border-radius:999px;transition:width .25s ease,background .2s ease"></div>
+      </div>
+      <div id="xarticle-progress-note" style="padding:0 12px 10px;font-size:11px;color:#536471;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">请保持页面打开</div>
+    `;
+    document.body.appendChild(panel);
+    return panel;
+  }
+
+  function updateInlineProgressPanel(progress = {}) {
+    const panel = ensureInlineProgressPanel();
+    const total = Math.max(0, Number(progress.imageTotal) || 0);
+    const ok = Math.max(0, Number(progress.imageOk) || 0);
+    const fail = Math.max(0, Number(progress.imageFail) || 0);
+    const current = Math.max(0, Math.min(total, Number(progress.imageIndex) || ok + fail));
+    const completed = Math.max(current, Math.min(total, ok + fail));
+    const pct = total ? Math.round((completed / total) * 100) : (progress.phase === 'done' ? 100 : 5);
+    const isDone = progress.status === 'done' || progress.phase === 'done';
+    const isError = progress.status === 'error';
+    const isWarning = progress.status === 'warning';
+    const message = String(progress.message || '');
+    const file = progress.currentFileName ? `当前图片：${progress.currentFileName}` : '';
+    panel.querySelector('#xarticle-progress-title').textContent = progressPhaseLabel(progress.phase);
+    panel.querySelector('#xarticle-progress-detail').textContent = /^retrying/i.test(message)
+      ? message
+      : (file || message || '正在处理文章...');
+    panel.querySelector('#xarticle-progress-count').textContent = total ? `${completed}/${total}` : '--';
+    panel.querySelector('#xarticle-progress-count').style.color = isError ? '#b91c1c' : isDone ? '#0f766e' : isWarning ? '#b45309' : '#1d4ed8';
+    const bar = panel.querySelector('#xarticle-progress-bar');
+    const width = total ? ((progress.status === 'running' && completed === 0) ? 5 : pct) : (isDone ? 100 : 0);
+    bar.style.width = `${Math.max(0, Math.min(100, width))}%`;
+    bar.style.background = isError ? '#dc2626' : isDone ? '#0f766e' : isWarning ? '#f59e0b' : '#1d9bf0';
+    panel.querySelector('#xarticle-progress-note').textContent = total
+      ? `成功 ${ok}，失败 ${fail}。${isDone ? '可检查后发布' : '请保持页面打开'}`
+      : (isDone ? '可检查后发布' : '正在写入正文');
+    panel.style.opacity = '1';
+    if (isDone || isError) {
+      setTimeout(() => {
+        const latest = document.getElementById('xarticle-progress-panel');
+        if (latest === panel) {
+          panel.style.opacity = '0';
+          setTimeout(() => panel.remove(), 300);
+        }
+      }, isDone ? 12000 : 18000);
+    }
+  }
+
+  function emitProgress(update = {}) {
+    const progress = {
+      sessionId: progressSession,
+      status: 'running',
+      phase: 'starting',
+      imageIndex: 0,
+      imageTotal: 0,
+      imageOk: 0,
+      imageFail: 0,
+      ts: Date.now(),
+      ...update
+    };
+    try {
+      updateInlineProgressPanel(progress);
+    } catch (e) {
+      console.warn(LOG, 'inline progress panel failed', e);
+    }
+    try {
+      fetch('http://localhost:8765/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(progress)
+      }).catch(() => {});
+    } catch (e) {
+      console.warn(LOG, 'progress server post failed', e);
+    }
+    try {
+      if (typeof options.onProgress === 'function') options.onProgress(progress);
+    } catch (e) {
+      console.warn(LOG, 'progress callback failed', e);
+    }
+    try {
+      window.postMessage({ source: 'xarticle-md', type: 'progress', progress }, '*');
+    } catch (e) {
+      console.warn(LOG, 'progress postMessage failed', e);
+    }
+    return progress;
+  }
 
   function articleIdFromUrl() {
     return location.href.match(/\/articles\/edit\/(\d+)/)?.[1] || null;
@@ -257,10 +381,10 @@ window.__xArticleWrite = async function(payload) {
     return true;
   }
 
-  function replaceMarkerWithAtomic(draftNode, marker, entityType, data, mutability) {
+  function replaceMarkerWithAtomic(draftNode, marker, entityType, data, mutability, baseContentState = null) {
     const editorState = draftNode.props.editorState;
     const EditorState = editorState.constructor;
-    const contentState = editorState.getCurrentContent();
+    const contentState = baseContentState || editorState.getCurrentContent();
     const sampleBlock = findDraftSampleBlock(draftNode);
     const blockKey = findMarkerLocation(contentState, marker)?.blockKey;
     if (!blockKey) return { ok: false, error: `Marker not found: ${marker}`, contentState };
@@ -291,7 +415,7 @@ window.__xArticleWrite = async function(payload) {
     let ok = 0, errors = [];
 
     for (const item of operations) {
-      const r = replaceMarkerWithAtomic(draftNode, item.marker, item.op.entityType, item.op.data || {}, item.op.mutability || 'IMMUTABLE');
+      const r = replaceMarkerWithAtomic(draftNode, item.marker, item.op.entityType, item.op.data || {}, item.op.mutability || 'IMMUTABLE', contentState);
       if (r.ok) { contentState = r.contentState; ok++; }
       else errors.push(r.error);
     }
@@ -466,6 +590,32 @@ window.__xArticleWrite = async function(payload) {
       }
     }
     return { ok: false, error: 'Upload timed out waiting for media entity' };
+  }
+
+  function isRetryableUploadError(error) {
+    const text = String(error || '');
+    return [
+      'Upload timed out waiting for media entity',
+      'Upload call failed',
+      'X upload handler not found'
+    ].some((needle) => text.includes(needle));
+  }
+
+  async function uploadImageWithRetry(draftNode, imagePayload, marker, index, total, onRetry) {
+    const maxAttempts = 2;
+    let last = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (attempt > 1) {
+        await sleep(1800);
+        draftNode = findDraftStateNode() || draftNode;
+      }
+      const result = await uploadSingleImage(draftNode, imagePayload, marker, index, total);
+      if (result.ok) return { ...result, attempts: attempt };
+      last = result;
+      if (attempt >= maxAttempts || !isRetryableUploadError(result.error)) break;
+      try { onRetry?.(attempt + 1, maxAttempts, result.error || 'upload failed'); } catch {}
+    }
+    return { ...(last || { ok: false, error: 'Upload failed' }), attempts: maxAttempts };
   }
 
   // ── Block deletion by key ─────────────────────────────
@@ -720,10 +870,38 @@ window.__xArticleWrite = async function(payload) {
     });
   }
 
+  function isCoverImageOperation(op, imagePayload, coverSource) {
+    if (imagePayload?.coverOnly || op?.op?.coverOnly) return true;
+    const source = imagePayload?.source || op?.op?.source || '';
+    return Boolean(coverSource && source && imageSourcesMatch(source, coverSource));
+  }
+
+  function prioritizeCoverImageOps(imageOps, imagePayloadByMarker, coverSource) {
+    return imageOps
+      .map((op, index) => ({
+        op,
+        index,
+        isCover: isCoverImageOperation(op, imagePayloadByMarker.get(op.marker), coverSource)
+      }))
+      .sort((a, b) => Number(b.isCover) - Number(a.isCover) || a.index - b.index)
+      .map((item) => item.op);
+  }
+
   // ── Main Flow ─────────────────────────────────────────
   async function runFlow(p) {
     let draftNode = findDraftStateNode();
-    if (!draftNode) return { ok: false, error: 'Draft.js editor not found. Are you on an X Article edit page?' };
+    const imagePayloads = Array.isArray(p.images) ? p.images : [];
+    const imagePayloadByMarker = new Map(imagePayloads.map((item) => [item.marker, item]));
+    const imageOps = prioritizeCoverImageOps(
+      (p.plan || []).filter(item => item.op.type === 'image'),
+      imagePayloadByMarker,
+      p.cover || ''
+    );
+    if (!draftNode) {
+      const error = 'Draft.js editor not found. Are you on an X Article edit page?';
+      emitProgress({ status: 'error', phase: 'error', imageTotal: imageOps.length, message: error });
+      return { ok: false, error };
+    }
 
     let articleId = p.articleId || articleIdFromUrl();
     const summary = {
@@ -733,11 +911,20 @@ window.__xArticleWrite = async function(payload) {
       title: { requested: !!p.title, value: p.title || null, ui: null, graphql: null },
       cover: { requested: !!p.cover, source: p.cover || null, graphql: null }
     };
+    emitProgress({
+      status: 'running',
+      phase: 'preparing',
+      title: p.title || '',
+      imageTotal: imageOps.length,
+      textBlocks: (p.blocks || []).length,
+      message: `Preparing article${imageOps.length ? ` with ${imageOps.length} image(s)` : ''}`
+    });
 
     try {
       // ── Title ──
       if (p.title) {
         console.log(LOG, 'Setting title...');
+        emitProgress({ phase: 'title', imageTotal: imageOps.length, message: 'Setting article title' });
         const tr = await setTitleViaUi(p.title);
         summary.title.ui = tr;
         if (articleId) {
@@ -748,6 +935,7 @@ window.__xArticleWrite = async function(payload) {
 
       // ── Write blocks ──
       console.log(LOG, 'Writing content blocks...');
+      emitProgress({ phase: 'writing_text', imageTotal: imageOps.length, message: 'Writing text blocks' });
       // 空编辑器先造出字符样本，否则 writeDraftBlocks 必失败、降级 HTML 粘贴导致图片落位错乱
       draftNode = await ensureDraftCharacterSample(draftNode) || draftNode;
       const wr = writeDraftBlocks(draftNode, p.blocks);
@@ -772,6 +960,7 @@ window.__xArticleWrite = async function(payload) {
       const atomicOps = (p.plan || []).filter(item => item.op.type === 'atomic');
       if (atomicOps.length) {
         console.log(LOG, `Inserting ${atomicOps.length} atomic blocks...`);
+        emitProgress({ phase: 'atomic', imageTotal: imageOps.length, message: `Inserting ${atomicOps.length} embedded block(s)` });
         draftNode = findDraftStateNode() || draftNode;
         const ar = insertAtomicBatch(draftNode, atomicOps);
         summary.atomicOk = ar.ok;
@@ -787,22 +976,65 @@ window.__xArticleWrite = async function(payload) {
       });
 
       // ── Images ──
-      const imageOps = (p.plan || []).filter(item => item.op.type === 'image');
       const uploads = [];
       let coverUpload = null;
+      emitProgress({
+        phase: imageOps.length ? 'uploading_images' : 'cleanup',
+        imageTotal: imageOps.length,
+        imageOk: summary.imgOk,
+        imageFail: summary.imgFail,
+        message: imageOps.length ? `Uploading images 0/${imageOps.length}` : 'No images to upload'
+      });
 
       for (let i = 0; i < imageOps.length; i++) {
         const op = imageOps[i];
-        const imgPayload = (p.images || []).find(ip => ip.marker === op.marker);
+        const imgPayload = imagePayloadByMarker.get(op.marker);
         if (!imgPayload) {
           summary.imgFail++;
           replaceMarkerText(draftNode, op.marker, op.op.fallbackText || '[image unavailable]');
+          emitProgress({
+            phase: 'uploading_images',
+            imageIndex: i + 1,
+            imageTotal: imageOps.length,
+            imageOk: summary.imgOk,
+            imageFail: summary.imgFail,
+            message: `${isCoverImageOperation(op, imgPayload, p.cover || '') ? 'Cover image' : 'Image'} ${i + 1}/${imageOps.length} unavailable`
+          });
           continue;
         }
 
-        console.log(LOG, `Uploading image ${i + 1}/${imageOps.length}...`);
+        const isCoverUpload = isCoverImageOperation(op, imgPayload, p.cover || '');
+        const uploadLabel = isCoverUpload ? 'cover image' : 'image';
+        console.log(LOG, `Uploading ${uploadLabel} ${i + 1}/${imageOps.length}...`);
+        emitProgress({
+          phase: 'uploading_images',
+          imageIndex: i + 1,
+          imageTotal: imageOps.length,
+          imageOk: summary.imgOk,
+          imageFail: summary.imgFail,
+          currentFileName: imgPayload.fileName || '',
+          coverOnly: !!imgPayload.coverOnly,
+          message: `Uploading ${uploadLabel} ${i + 1}/${imageOps.length}`
+        });
         draftNode = findDraftStateNode() || draftNode;
-        const ur = await uploadSingleImage(draftNode, imgPayload, op.marker, i + 1, imageOps.length);
+        const ur = await uploadImageWithRetry(
+          draftNode,
+          imgPayload,
+          op.marker,
+          i + 1,
+          imageOps.length,
+          (attempt, maxAttempts, error) => emitProgress({
+            phase: 'uploading_images',
+            imageIndex: i + 1,
+            imageTotal: imageOps.length,
+            imageOk: summary.imgOk,
+            imageFail: summary.imgFail,
+            currentFileName: imgPayload.fileName || '',
+            coverOnly: !!imgPayload.coverOnly,
+            message: `Retrying ${uploadLabel} ${i + 1}/${imageOps.length} (${attempt}/${maxAttempts})`,
+            error
+          })
+        );
 
         if (ur.ok) {
           summary.imgOk++;
@@ -835,14 +1067,47 @@ window.__xArticleWrite = async function(payload) {
           if (upload.coverOnly && upload.blockKey) protectedAtomicBlocks.add(upload.blockKey);
 
           // 命中封面 → 设置封面
+          articleId = articleId || articleIdFromUrl();
           if (p.cover && upload.source && imageSourcesMatch(upload.source, p.cover) && upload.mediaId && articleId && !summary.cover.graphql) {
             coverUpload = upload;
+            emitProgress({
+              phase: 'cover',
+              imageIndex: i + 1,
+              imageTotal: imageOps.length,
+              imageOk: summary.imgOk,
+              imageFail: summary.imgFail,
+              currentFileName: imgPayload.fileName || '',
+              message: 'Setting cover image'
+            });
             const cr = await updateCoverGraphql(articleId, upload.mediaId);
             summary.cover.graphql = cr;
+          } else if (p.cover && upload.coverOnly && upload.mediaId && !articleId && !summary.cover.graphql) {
+            summary.cover.graphql = { ok: false, error: 'Article id not found; open the saved edit URL and import again to set cover' };
           }
+          emitProgress({
+            phase: 'uploading_images',
+            imageIndex: i + 1,
+            imageTotal: imageOps.length,
+            imageOk: summary.imgOk,
+            imageFail: summary.imgFail,
+            currentFileName: imgPayload.fileName || '',
+            coverOnly: !!imgPayload.coverOnly,
+            mediaId: ur.mediaId || null,
+            message: `Uploaded ${uploadLabel} ${i + 1}/${imageOps.length}`
+          });
         } else {
           summary.imgFail++;
           replaceMarkerText(draftNode, op.marker, imgPayload.fallbackText || (imgPayload.coverOnly ? '' : '[image upload failed]'));
+          emitProgress({
+            phase: 'uploading_images',
+            imageIndex: i + 1,
+            imageTotal: imageOps.length,
+            imageOk: summary.imgOk,
+            imageFail: summary.imgFail,
+            currentFileName: imgPayload.fileName || '',
+            error: ur.error || '',
+            message: `${isCoverUpload ? 'Cover image' : 'Image'} ${i + 1}/${imageOps.length} failed`
+          });
         }
         draftNode = findDraftStateNode() || draftNode;
       }
@@ -851,6 +1116,14 @@ window.__xArticleWrite = async function(payload) {
       const unsettledUploads = uploads.filter((u) => !u.coverOnly && !u.settled);
       if (unsettledUploads.length) {
         console.log(LOG, `Reordering ${unsettledUploads.length} remaining image(s)...`);
+        emitProgress({
+          phase: 'reordering',
+          imageIndex: imageOps.length,
+          imageTotal: imageOps.length,
+          imageOk: summary.imgOk,
+          imageFail: summary.imgFail,
+          message: `Reordering ${unsettledUploads.length} image(s)`
+        });
         await sleep(900);
         draftNode = findDraftStateNode() || draftNode;
         const rr = relocateImages(draftNode, unsettledUploads, protectedAtomicBlocks);
@@ -897,6 +1170,14 @@ window.__xArticleWrite = async function(payload) {
       // X 的图片上传是异步的，单次清理后回调可能把 marker / 封面块改回来（限流时尤其明显），
       // 所以这里多轮重试：每轮清 marker + 再删一次可能被重新插回的封面块，直到收敛或轮次用尽。
       console.log(LOG, 'Cleaning markers (multi-pass)...');
+      emitProgress({
+        phase: 'cleanup',
+        imageIndex: imageOps.length,
+        imageTotal: imageOps.length,
+        imageOk: summary.imgOk,
+        imageFail: summary.imgFail,
+        message: 'Cleaning placeholders'
+      });
       for (let pass = 0; pass < 6; pass++) {
         try {
           draftNode = findDraftStateNode() || draftNode;
@@ -921,6 +1202,15 @@ window.__xArticleWrite = async function(payload) {
         } catch (e) { console.warn(LOG, 'cleanup pass failed', e); break; }
       }
 
+      emitProgress({
+        status: summary.imgFail ? 'warning' : 'done',
+        phase: 'done',
+        imageIndex: imageOps.length,
+        imageTotal: imageOps.length,
+        imageOk: summary.imgOk,
+        imageFail: summary.imgFail,
+        message: summary.imgFail ? `Done with ${summary.imgFail} failed image(s)` : 'Import complete'
+      });
       return { ok: true, summary };
 
     } catch (error) {
@@ -930,6 +1220,15 @@ window.__xArticleWrite = async function(payload) {
         draftNode = findDraftStateNode();
         if (draftNode) cleanupMarkers(draftNode, p.markerPrefix);
       } catch {}
+      emitProgress({
+        status: 'error',
+        phase: 'error',
+        imageTotal: imageOps.length,
+        imageOk: summary.imgOk,
+        imageFail: summary.imgFail,
+        message: error.message,
+        error: error.message
+      });
       return { ok: false, error: error.message, stack: error.stack, summary };
     }
   }

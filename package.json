@@ -1,17 +1,29 @@
 {
-  "name": "hermes-x-publisher",
+  "name": "x-article-md-publisher",
   "version": "4.1.0",
-  "description": "Publish Markdown articles to X Articles via Chrome Extension auto-injection",
+  "description": "Publish Markdown articles to X Articles via a local dashboard and Chrome extension",
   "main": "xarticle-server.js",
   "scripts": {
     "publish": "bash publish-to-x.sh",
     "server": "node xarticle-server.js",
+    "server:mac": "bash scripts/xarticle-server.sh start",
+    "server:win": "powershell -ExecutionPolicy Bypass -File scripts/xarticle-server.ps1 start",
+    "server:stop:mac": "bash scripts/xarticle-server.sh stop",
+    "server:stop:win": "powershell -ExecutionPolicy Bypass -File scripts/xarticle-server.ps1 stop",
     "auto": "node auto-publish.js",
     "setup": "bash setup.sh"
   },
   "dependencies": {
     "playwright-core": "^1.49.0"
   },
-  "keywords": ["x", "twitter", "articles", "publisher", "hermes", "chrome-extension"],
+  "keywords": ["x", "twitter", "articles", "markdown", "publisher", "chrome-extension"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/throughs/x-article-md-publisher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/throughs/x-article-md-publisher/issues"
+  },
+  "homepage": "https://github.com/throughs/x-article-md-publisher#readme",
   "license": "MIT"
 }

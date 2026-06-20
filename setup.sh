@@ -1,5 +1,5 @@
 #!/bin/bash
-# Hermes X Publisher — One-time setup script
+# X Article Markdown Publisher — One-time setup script
 # Run once on a new machine:
 #   bash setup.sh
 #
@@ -17,7 +17,7 @@ NC='\033[0m'
 
 echo ""
 echo "═══════════════════════════════════════════"
-echo "  🚀 Hermes X Publisher — Setup"
+echo "  🚀 X Article Markdown Publisher — Setup"
 echo "═══════════════════════════════════════════"
 echo ""
 

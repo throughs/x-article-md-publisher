@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Hermes X Publisher",
+  "name": "X Article Markdown Publisher",
   "version": "2.0",
-  "description": "Import Markdown articles into X Articles editor with one click",
+  "description": "Import Markdown articles into the X Articles editor with one click",
   "permissions": ["scripting", "activeTab"],
   "host_permissions": [
     "https://x.com/*",

@@ -1,12 +1,12 @@
 #!/bin/bash
-# publish-to-x.sh — Hermes one-click X Article publisher
+# publish-to-x.sh — macOS one-click X Article Markdown Publisher helper
 # Usage: publish-to-x.sh <markdown_file.md>
 #
 # 1. Kills old server
 # 2. Starts new server with article loaded
 # 3. Opens X Articles in Chrome
 #
-# User then: sees [📥 导入 Hermes 文章] button → clicks → preview → confirm → inject → Publish
+# User then: sees [📥 载入文章] button → clicks → import → reviews → Publish
 
 set -e
 
@@ -54,5 +54,9 @@ echo ""
 echo "   💡 手动备选: http://localhost:$PORT"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Open X Articles in Chrome
-open -a "Google Chrome" "https://x.com/compose/articles/new"
+# Open X Articles in Chrome on macOS.
+if [ "$(uname -s)" = "Darwin" ]; then
+  open -a "Google Chrome" "https://x.com/compose/articles/new"
+else
+  echo "Non-macOS detected. Open this URL manually: https://x.com/compose/articles/new"
+fi

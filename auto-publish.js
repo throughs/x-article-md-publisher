@@ -9,7 +9,7 @@
  *
  * 选项:
  *   --headless       无头运行(默认有头,X 风控对无头敏感,不建议)
- *   --profile=<dir>  自定义登录态配置目录(默认 ~/.hermes-x-profile)
+ *   --profile=<dir>  自定义登录态配置目录(默认 ~/.x-article-md-profile)
  *   --timeout=<ms>   登录/编辑器等待超时(默认 180000)
  *
  * 登录态:首次会打开浏览器,请在里面登录 X 一次,之后会话持久化,无需再登。
@@ -35,7 +35,7 @@ const mdPath = args.find((a) => !a.startsWith('--'));
 const headless = args.includes('--headless');
 const profileArg = args.find((a) => a.startsWith('--profile='));
 const timeoutArg = args.find((a) => a.startsWith('--timeout='));
-const profileDir = profileArg ? profileArg.split('=')[1] : path.join(os.homedir(), '.hermes-x-profile');
+const profileDir = profileArg ? profileArg.split('=')[1] : path.join(os.homedir(), '.x-article-md-profile');
 const navTimeout = timeoutArg ? parseInt(timeoutArg.split('=')[1]) : 180000;
 
 if (!mdPath) {
@@ -131,7 +131,7 @@ async function freeProfileIfBusy() {
 (async () => {
   let payload;
   try {
-    payload = buildPayload(mdPath);
+    payload = await buildPayload(mdPath);
   } catch (e) {
     console.error('❌ 解析 Markdown 失败: ' + e.message);
     process.exit(1);

@@ -4,3 +4,6 @@ publish.js
 test_stealth.js
 *.tar.gz
 *.DS_Store
+.xarticle-server.pid
+.xarticle-server.log
+.xarticle-server.err.log

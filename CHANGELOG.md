@@ -2,10 +2,17 @@
 
 > 按版本记录关键改动，最新在上。
 
+## [Unreleased]
+
+### 变更
+- 公开项目名称与文档统一为 `X Article Markdown Publisher` / `x-article-md-publisher`。
+- 新增 macOS/Linux 与 Windows 分开的 server 启停脚本，默认端口仍为 `8765`。
+- 优化 Windows/macOS 本地图片路径兼容处理。
+
 ## [4.1.0] - 2026-06-05
 
 ### 新增
-- **全自动无人值守模式 `auto-publish.js`**（Playwright + 系统 Chrome）：自动打开 X 文章编辑器、新建文章、注入正文 + 图片 + 封面，灌完停在草稿等你手动发布——**工具永不自动发布**。持久化登录态（`~/.hermes-x-profile`），首次登录一次后免登。
+- **全自动无人值守模式 `auto-publish.js`**（Playwright + 系统 Chrome）：自动打开 X 文章编辑器、新建文章、注入正文 + 图片 + 封面，灌完停在草稿等你手动发布——**工具永不自动发布**。持久化登录态（`~/.x-article-md-profile`），首次登录一次后免登。
 - **图片轻度压缩**（`payload.js`，调用 macOS 原生 `sips`，零依赖）：>150KB 的大图缩到长边 ≤1280px 并转 JPEG q82，体积常砍 5~10 倍（如 2.1MB → 228KB），上传更快、更不易触发 X 限流；只缩不放大。
 - **Profile 占用自检**（`auto-publish.js`）：启动前检测并关闭上一个未关的发布浏览器（共用同一登录态），启动失败再清理锁文件重试，避免「现有会话」冲突。
 - **`payload.js`**：把 `buildPayload` 抽成独立模块，扩展模式与全自动模式共用同一套解析逻辑（单一数据源）。

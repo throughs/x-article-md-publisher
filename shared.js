@@ -168,6 +168,7 @@
       : null;
     const titleCandidate = extractTitle ? markdownTitleCandidateFromOptions(options) : "";
     let cover = extractCover ? meta.cover || meta.Cover || meta["封面"] || null : null;
+    let coverSource = cover ? "frontmatter" : "";
     if (cover) {
       cover = cover
         .replace(/^!\[\[|\]\]$/g, "")
@@ -215,13 +216,15 @@
       titleSource = "candidate";
     }
 
-    if (extractCover && !cover) {
+    if (extractCover && !cover && options.firstImageAsCover === true) {
       cover = segments.find((segment) => segment.type === "image" && segment.source)?.source || null;
+      if (cover) coverSource = "first-image";
     }
 
     return {
       title,
       cover,
+      coverSource,
       segments,
       meta,
       titleFromMeta: Boolean(extractTitle && titleFromMeta),
@@ -742,7 +745,8 @@
 
       if (segment.type === "code") {
         const id = marker("CODE");
-        const markdown = `\`\`\`${segment.language || ""}\n${segment.code || ""}\n\`\`\``;
+        const language = String(segment.language || "").trim();
+        const markdown = `\`\`\`${language}\n${segment.code || ""}\n\`\`\``;
         html.push(`<p>${id}</p>`);
         addBlock("unstyled", id);
         plan.push({
