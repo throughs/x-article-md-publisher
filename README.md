@@ -10,6 +10,8 @@
 
 作者 X 主页：[@fishchang1024](https://x.com/fishchang1024)
 
+参考原项目：[xPoster](https://github.com/nevertoday/xposter)
+
 ## 项目名称
 
 推荐公开仓库名：

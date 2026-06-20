@@ -10,6 +10,8 @@ This project is independent and is not affiliated with, endorsed by, or sponsore
 
 Author on X: [@fishchang1024](https://x.com/fishchang1024)
 
+Original project reference: [xPoster](https://github.com/nevertoday/xposter)
+
 ## Project Name
 
 Recommended public repository name:
