@@ -14,6 +14,31 @@ window.__xArticleWrite = async function(payload, options = {}) {
   const LOG = '[xArticle]';
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const progressSession = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const UPLOAD_TIMEOUT_MS = 120000;
+  const UPLOAD_HEARTBEAT_MS = 5000;
+
+  function seconds(ms) {
+    return Math.max(1, Math.round((Number(ms) || 0) / 1000));
+  }
+
+  function uploadPacingDelayMs(imageIndex, total, lastElapsedMs = 0) {
+    if (imageIndex <= 1 || total < 8) return 0;
+    let delay = 1200;
+    if (imageIndex > 10) delay = 1800;
+    if (imageIndex > 15) delay = 2600;
+    if (imageIndex > 20) delay = 4500;
+    if (imageIndex > 25) delay = 8000;
+    if (lastElapsedMs > 45000) delay = Math.max(delay, 10000);
+    if (lastElapsedMs > 80000) delay = Math.max(delay, 15000);
+    return delay + Math.floor(Math.random() * 500);
+  }
+
+  function uploadEvidenceHint(elapsedMs, imageIndex) {
+    if (elapsedMs >= UPLOAD_TIMEOUT_MS) return `timeout after ${seconds(elapsedMs)}s; possible X media queue/rate limit`;
+    if (imageIndex > 20 && elapsedMs > 45000) return `slow media entity after ${seconds(elapsedMs)}s; possible X media queue/rate limit`;
+    if (elapsedMs > 30000) return `slow media entity after ${seconds(elapsedMs)}s`;
+    return '';
+  }
 
   function progressPhaseLabel(phase) {
     return ({
@@ -84,8 +109,12 @@ window.__xArticleWrite = async function(payload, options = {}) {
     const width = total ? ((progress.status === 'running' && completed === 0) ? 5 : pct) : (isDone ? 100 : 0);
     bar.style.width = `${Math.max(0, Math.min(100, width))}%`;
     bar.style.background = isError ? '#dc2626' : isDone ? '#0f766e' : isWarning ? '#f59e0b' : '#1d9bf0';
+    const meta = [];
+    if (progress.waitMs) meta.push(`等待 ${seconds(progress.waitMs)}s`);
+    if (progress.elapsedMs) meta.push(`耗时 ${seconds(progress.elapsedMs)}s`);
+    if (progress.attempt && progress.maxAttempts) meta.push(`尝试 ${progress.attempt}/${progress.maxAttempts}`);
     panel.querySelector('#xarticle-progress-note').textContent = total
-      ? `成功 ${ok}，失败 ${fail}。${isDone ? '可检查后发布' : '请保持页面打开'}`
+      ? `成功 ${ok}，失败 ${fail}。${meta.length ? meta.join('，') : (isDone ? '可检查后发布' : '请保持页面打开')}`
       : (isDone ? '可检查后发布' : '正在写入正文');
     panel.style.opacity = '1';
     if (isDone || isError) {
@@ -500,7 +529,7 @@ window.__xArticleWrite = async function(payload, options = {}) {
     return location;
   }
 
-  async function uploadSingleImage(draftNode, imagePayload, marker, index, total) {
+  async function uploadSingleImage(draftNode, imagePayload, marker, index, total, hooks = {}) {
     const onFilesAdded = findOnFilesAdded();
     if (!onFilesAdded) return { ok: false, error: 'X upload handler not found' };
 
@@ -528,9 +557,22 @@ window.__xArticleWrite = async function(payload, options = {}) {
     }
 
     // Wait for the upload to complete (new atomic block appears)
-    const deadline = Date.now() + 120000;
+    const startedAt = Date.now();
+    const deadline = startedAt + UPLOAD_TIMEOUT_MS;
+    let lastHeartbeatAt = startedAt;
     while (Date.now() < deadline) {
       await sleep(500);
+      const now = Date.now();
+      if (now - lastHeartbeatAt >= UPLOAD_HEARTBEAT_MS) {
+        lastHeartbeatAt = now;
+        try {
+          hooks.onWait?.({
+            elapsedMs: now - startedAt,
+            timeoutMs: UPLOAD_TIMEOUT_MS,
+            evidence: uploadEvidenceHint(now - startedAt, index)
+          });
+        } catch {}
+      }
       draftNode = findDraftStateNode() || draftNode;
       if (!draftNode) continue;
       const contentState = draftNode.props.editorState.getCurrentContent();
@@ -579,6 +621,7 @@ window.__xArticleWrite = async function(payload, options = {}) {
         } catch (e) { /* best-effort */ }
         return {
           ok: true,
+          elapsedMs: Date.now() - startedAt,
           blockKey: newBlock.blockKey,
           entityKey,
           mediaId,
@@ -589,7 +632,12 @@ window.__xArticleWrite = async function(payload, options = {}) {
         };
       }
     }
-    return { ok: false, error: 'Upload timed out waiting for media entity' };
+    return {
+      ok: false,
+      error: 'Upload timed out waiting for media entity',
+      elapsedMs: Date.now() - startedAt,
+      evidence: uploadEvidenceHint(Date.now() - startedAt, index)
+    };
   }
 
   function isRetryableUploadError(error) {
@@ -601,7 +649,7 @@ window.__xArticleWrite = async function(payload, options = {}) {
     ].some((needle) => text.includes(needle));
   }
 
-  async function uploadImageWithRetry(draftNode, imagePayload, marker, index, total, onRetry) {
+  async function uploadImageWithRetry(draftNode, imagePayload, marker, index, total, hooks = {}) {
     const maxAttempts = 2;
     let last = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -609,11 +657,24 @@ window.__xArticleWrite = async function(payload, options = {}) {
         await sleep(1800);
         draftNode = findDraftStateNode() || draftNode;
       }
-      const result = await uploadSingleImage(draftNode, imagePayload, marker, index, total);
-      if (result.ok) return { ...result, attempts: attempt };
+      console.log(LOG, `upload ${index}/${total} attempt ${attempt}/${maxAttempts} started`, imagePayload?.fileName || '');
+      const result = await uploadSingleImage(draftNode, imagePayload, marker, index, total, {
+        onWait: (info) => {
+          console.info(LOG, `upload ${index}/${total} attempt ${attempt}/${maxAttempts} waiting ${seconds(info.elapsedMs)}s`, info.evidence || '');
+          hooks.onWait?.(attempt, maxAttempts, info);
+        }
+      });
+      if (result.ok) {
+        console.log(LOG, `upload ${index}/${total} attempt ${attempt}/${maxAttempts} ok in ${seconds(result.elapsedMs)}s`, {
+          mediaId: result.mediaId || null,
+          entityKey: result.entityKey || null
+        });
+        return { ...result, attempts: attempt };
+      }
       last = result;
+      console.warn(LOG, `upload ${index}/${total} attempt ${attempt}/${maxAttempts} failed in ${seconds(result.elapsedMs)}s`, result.error, result.evidence || '');
       if (attempt >= maxAttempts || !isRetryableUploadError(result.error)) break;
-      try { onRetry?.(attempt + 1, maxAttempts, result.error || 'upload failed'); } catch {}
+      try { hooks.onRetry?.(attempt + 1, maxAttempts, result.error || 'upload failed', result); } catch {}
     }
     return { ...(last || { ok: false, error: 'Upload failed' }), attempts: maxAttempts };
   }
@@ -908,6 +969,7 @@ window.__xArticleWrite = async function(payload, options = {}) {
       atomicOk: 0, atomicFail: 0,
       imgOk: 0, imgFail: 0,
       markersCleaned: 0, relocatedImages: 0,
+      uploadTimings: [],
       title: { requested: !!p.title, value: p.title || null, ui: null, graphql: null },
       cover: { requested: !!p.cover, source: p.cover || null, graphql: null }
     };
@@ -978,6 +1040,7 @@ window.__xArticleWrite = async function(payload, options = {}) {
       // ── Images ──
       const uploads = [];
       let coverUpload = null;
+      let lastUploadElapsedMs = 0;
       emitProgress({
         phase: imageOps.length ? 'uploading_images' : 'cleanup',
         imageTotal: imageOps.length,
@@ -1005,6 +1068,25 @@ window.__xArticleWrite = async function(payload, options = {}) {
 
         const isCoverUpload = isCoverImageOperation(op, imgPayload, p.cover || '');
         const uploadLabel = isCoverUpload ? 'cover image' : 'image';
+        const waitMs = uploadPacingDelayMs(i + 1, imageOps.length, lastUploadElapsedMs);
+        if (waitMs > 0) {
+          const waitMessage = `Pacing upload: waiting ${seconds(waitMs)}s before ${uploadLabel} ${i + 1}/${imageOps.length}`;
+          console.info(LOG, waitMessage, { lastUploadElapsedMs, imageIndex: i + 1, imageTotal: imageOps.length });
+          emitProgress({
+            phase: 'uploading_images',
+            imageIndex: i + 1,
+            imageTotal: imageOps.length,
+            imageOk: summary.imgOk,
+            imageFail: summary.imgFail,
+            currentFileName: imgPayload.fileName || '',
+            coverOnly: !!imgPayload.coverOnly,
+            waitMs,
+            lastUploadMs: lastUploadElapsedMs,
+            message: waitMessage
+          });
+          await sleep(waitMs);
+          draftNode = findDraftStateNode() || draftNode;
+        }
         console.log(LOG, `Uploading ${uploadLabel} ${i + 1}/${imageOps.length}...`);
         emitProgress({
           phase: 'uploading_images',
@@ -1023,18 +1105,50 @@ window.__xArticleWrite = async function(payload, options = {}) {
           op.marker,
           i + 1,
           imageOps.length,
-          (attempt, maxAttempts, error) => emitProgress({
-            phase: 'uploading_images',
-            imageIndex: i + 1,
-            imageTotal: imageOps.length,
-            imageOk: summary.imgOk,
-            imageFail: summary.imgFail,
-            currentFileName: imgPayload.fileName || '',
-            coverOnly: !!imgPayload.coverOnly,
-            message: `Retrying ${uploadLabel} ${i + 1}/${imageOps.length} (${attempt}/${maxAttempts})`,
-            error
-          })
+          {
+            onRetry: (attempt, maxAttempts, error, result) => emitProgress({
+              phase: 'uploading_images',
+              imageIndex: i + 1,
+              imageTotal: imageOps.length,
+              imageOk: summary.imgOk,
+              imageFail: summary.imgFail,
+              currentFileName: imgPayload.fileName || '',
+              coverOnly: !!imgPayload.coverOnly,
+              elapsedMs: result?.elapsedMs || 0,
+              attempt,
+              maxAttempts,
+              evidence: result?.evidence || '',
+              message: `Retrying ${uploadLabel} ${i + 1}/${imageOps.length} (${attempt}/${maxAttempts})`,
+              error
+            }),
+            onWait: (attempt, maxAttempts, info) => emitProgress({
+              phase: 'uploading_images',
+              imageIndex: i + 1,
+              imageTotal: imageOps.length,
+              imageOk: summary.imgOk,
+              imageFail: summary.imgFail,
+              currentFileName: imgPayload.fileName || '',
+              coverOnly: !!imgPayload.coverOnly,
+              elapsedMs: info.elapsedMs || 0,
+              timeoutMs: info.timeoutMs || 0,
+              attempt,
+              maxAttempts,
+              evidence: info.evidence || '',
+              message: `Waiting for X media entity ${uploadLabel} ${i + 1}/${imageOps.length} (${seconds(info.elapsedMs)}s)`
+            })
+          }
         );
+        lastUploadElapsedMs = ur.elapsedMs || 0;
+        summary.uploadTimings.push({
+          index: i + 1,
+          total: imageOps.length,
+          fileName: imgPayload.fileName || '',
+          ok: !!ur.ok,
+          attempts: ur.attempts || 1,
+          elapsedMs: ur.elapsedMs || 0,
+          evidence: ur.evidence || '',
+          error: ur.error || ''
+        });
 
         if (ur.ok) {
           summary.imgOk++;
@@ -1093,7 +1207,11 @@ window.__xArticleWrite = async function(payload, options = {}) {
             currentFileName: imgPayload.fileName || '',
             coverOnly: !!imgPayload.coverOnly,
             mediaId: ur.mediaId || null,
-            message: `Uploaded ${uploadLabel} ${i + 1}/${imageOps.length}`
+            elapsedMs: ur.elapsedMs || 0,
+            attempt: ur.attempts || 1,
+            maxAttempts: 2,
+            evidence: ur.evidence || '',
+            message: `Uploaded ${uploadLabel} ${i + 1}/${imageOps.length} in ${seconds(ur.elapsedMs || 0)}s`
           });
         } else {
           summary.imgFail++;
@@ -1105,8 +1223,12 @@ window.__xArticleWrite = async function(payload, options = {}) {
             imageOk: summary.imgOk,
             imageFail: summary.imgFail,
             currentFileName: imgPayload.fileName || '',
+            elapsedMs: ur.elapsedMs || 0,
+            attempt: ur.attempts || 2,
+            maxAttempts: 2,
+            evidence: ur.evidence || '',
             error: ur.error || '',
-            message: `${isCoverUpload ? 'Cover image' : 'Image'} ${i + 1}/${imageOps.length} failed`
+            message: `${isCoverUpload ? 'Cover image' : 'Image'} ${i + 1}/${imageOps.length} failed after ${seconds(ur.elapsedMs || 0)}s`
           });
         }
         draftNode = findDraftStateNode() || draftNode;
@@ -1201,6 +1323,20 @@ window.__xArticleWrite = async function(payload, options = {}) {
           console.log(LOG, `pass ${pass + 1}: ${remaining} marker(s) left, coverInBody=${coverStillInBody}`);
         } catch (e) { console.warn(LOG, 'cleanup pass failed', e); break; }
       }
+
+      try {
+        console.groupCollapsed(LOG, 'upload timing summary');
+        console.table(summary.uploadTimings.map((item) => ({
+          image: `${item.index}/${item.total}`,
+          ok: item.ok,
+          attempts: item.attempts,
+          seconds: seconds(item.elapsedMs),
+          fileName: item.fileName,
+          evidence: item.evidence,
+          error: item.error
+        })));
+        console.groupEnd();
+      } catch {}
 
       emitProgress({
         status: summary.imgFail ? 'warning' : 'done',

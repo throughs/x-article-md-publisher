@@ -84,7 +84,8 @@ function updateImportProgress(update = {}) {
   }
   const allowed = [
     'sessionId', 'status', 'phase', 'title', 'textBlocks', 'imageIndex', 'imageTotal',
-    'imageOk', 'imageFail', 'currentFileName', 'coverOnly', 'mediaId', 'message', 'error', 'ts'
+    'imageOk', 'imageFail', 'currentFileName', 'coverOnly', 'mediaId', 'message', 'error', 'ts',
+    'elapsedMs', 'timeoutMs', 'waitMs', 'lastUploadMs', 'attempt', 'maxAttempts', 'evidence'
   ];
   const next = {};
   for (const key of allowed) {
