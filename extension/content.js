@@ -89,7 +89,7 @@
     const keepOpenText = '请保持页面打开';
 
     panel.querySelector('#xarticle-progress-title').textContent = title;
-    panel.querySelector('#xarticle-progress-detail').textContent = /^retrying/i.test(message)
+    panel.querySelector('#xarticle-progress-detail').textContent = /^(retrying|waiting|pacing|skipped|manual)/i.test(message)
       ? message
       : (file || message || '正在处理文章...');
     panel.querySelector('#xarticle-progress-count').textContent = total ? `${completed}/${total}` : '--';
@@ -98,8 +98,13 @@
     const width = total ? ((p.status === 'running' && completed === 0) ? 5 : percent) : (isDone ? 100 : 0);
     bar.style.width = `${Math.max(0, Math.min(100, width))}%`;
     bar.style.background = isError ? '#dc2626' : isDone ? '#0f766e' : isWarning ? '#f59e0b' : '#1d9bf0';
+    const meta = [];
+    if (p.waitMs) meta.push(`等待 ${Math.max(1, Math.round(Number(p.waitMs) / 1000))}s`);
+    if (p.elapsedMs) meta.push(`耗时 ${Math.max(1, Math.round(Number(p.elapsedMs) / 1000))}s`);
+    if (p.attempt && p.maxAttempts) meta.push(`尝试 ${p.attempt}/${p.maxAttempts}`);
+    if (p.evidence) meta.push(String(p.evidence));
     panel.querySelector('#xarticle-progress-note').textContent = total
-      ? `成功 ${ok}，失败 ${fail}。${isDone ? '可检查后发布' : keepOpenText}`
+      ? `成功 ${ok}，失败 ${fail}。${meta.length ? meta.join('，') : (isDone ? '可检查后发布' : keepOpenText)}`
       : (isDone ? '可检查后发布' : '正在写入正文');
 
     if (progressHideTimer) clearTimeout(progressHideTimer);

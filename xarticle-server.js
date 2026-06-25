@@ -91,6 +91,10 @@ function updateImportProgress(update = {}) {
   for (const key of allowed) {
     if (Object.prototype.hasOwnProperty.call(update, key)) next[key] = update[key];
   }
+  const transient = ['mediaId', 'error', 'elapsedMs', 'timeoutMs', 'waitMs', 'lastUploadMs', 'attempt', 'maxAttempts', 'evidence'];
+  for (const key of transient) {
+    if (!Object.prototype.hasOwnProperty.call(update, key)) next[key] = null;
+  }
   importProgress = {
     ...importProgress,
     ...next,

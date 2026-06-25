@@ -16,6 +16,12 @@ window.__xArticleWrite = async function(payload, options = {}) {
   const progressSession = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const UPLOAD_TIMEOUT_MS = 120000;
   const UPLOAD_HEARTBEAT_MS = 5000;
+  const X_ARTICLE_MEDIA_LIMIT = 25;
+  const importControl = {
+    retryCurrentToken: 0,
+    skipCurrentToken: 0
+  };
+  window.__xArticleImportControl = importControl;
 
   function seconds(ms) {
     return Math.max(1, Math.round((Number(ms) || 0) / 1000));
@@ -59,7 +65,10 @@ window.__xArticleWrite = async function(payload, options = {}) {
 
   function ensureInlineProgressPanel() {
     let panel = document.getElementById('xarticle-progress-panel');
-    if (panel) return panel;
+    if (panel) {
+      ensureProgressControls(panel);
+      return panel;
+    }
     panel = document.createElement('div');
     panel.id = 'xarticle-progress-panel';
     panel.style.cssText = `
@@ -83,7 +92,43 @@ window.__xArticleWrite = async function(payload, options = {}) {
       <div id="xarticle-progress-note" style="padding:0 12px 10px;font-size:11px;color:#536471;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">请保持页面打开</div>
     `;
     document.body.appendChild(panel);
+    ensureProgressControls(panel);
     return panel;
+  }
+
+  function ensureProgressControls(panel) {
+    if (!panel || panel.querySelector('#xarticle-progress-controls')) return;
+    const controls = document.createElement('div');
+    controls.id = 'xarticle-progress-controls';
+    controls.style.cssText = 'display:flex;gap:8px;padding:0 12px 10px';
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.textContent = '重试当前';
+    retry.title = '中断当前等待，并立刻进入当前图片的下一次上传尝试。';
+    retry.style.cssText = 'border:1px solid #cfd9de;background:#fff;color:#0f1419;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer';
+    retry.addEventListener('click', () => {
+      importControl.retryCurrentToken = Date.now();
+      console.warn(LOG, 'manual retry current image requested');
+      try {
+        panel.querySelector('#xarticle-progress-note').textContent = '已请求重试当前图片，等待当前尝试退出...';
+      } catch {}
+    });
+    const skip = document.createElement('button');
+    skip.type = 'button';
+    skip.textContent = '跳过当前';
+    skip.title = '当前图片记为失败，继续上传后面的图片。';
+    skip.style.cssText = 'border:1px solid #fecaca;background:#fff;color:#b91c1c;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer';
+    skip.addEventListener('click', () => {
+      importControl.skipCurrentToken = Date.now();
+      console.warn(LOG, 'manual skip current image requested');
+      try {
+        panel.querySelector('#xarticle-progress-note').textContent = '已请求跳过当前图片，准备继续后续图片...';
+      } catch {}
+    });
+    controls.append(retry, skip);
+    const note = panel.querySelector('#xarticle-progress-note');
+    if (note && note.parentNode) note.parentNode.insertBefore(controls, note.nextSibling);
+    else panel.appendChild(controls);
   }
 
   function updateInlineProgressPanel(progress = {}) {
@@ -100,7 +145,7 @@ window.__xArticleWrite = async function(payload, options = {}) {
     const message = String(progress.message || '');
     const file = progress.currentFileName ? `当前图片：${progress.currentFileName}` : '';
     panel.querySelector('#xarticle-progress-title').textContent = progressPhaseLabel(progress.phase);
-    panel.querySelector('#xarticle-progress-detail').textContent = /^retrying/i.test(message)
+    panel.querySelector('#xarticle-progress-detail').textContent = /^(retrying|waiting|pacing|manual)/i.test(message)
       ? message
       : (file || message || '正在处理文章...');
     panel.querySelector('#xarticle-progress-count').textContent = total ? `${completed}/${total}` : '--';
@@ -560,9 +605,29 @@ window.__xArticleWrite = async function(payload, options = {}) {
     const startedAt = Date.now();
     const deadline = startedAt + UPLOAD_TIMEOUT_MS;
     let lastHeartbeatAt = startedAt;
+    const retryTokenAtStart = importControl.retryCurrentToken;
+    const skipTokenAtStart = importControl.skipCurrentToken;
     while (Date.now() < deadline) {
       await sleep(500);
       const now = Date.now();
+      if (importControl.skipCurrentToken !== skipTokenAtStart) {
+        return {
+          ok: false,
+          error: 'Manual skip requested',
+          elapsedMs: now - startedAt,
+          evidence: 'manual skip requested',
+          manualSkip: true
+        };
+      }
+      if (importControl.retryCurrentToken !== retryTokenAtStart) {
+        return {
+          ok: false,
+          error: 'Manual retry requested',
+          elapsedMs: now - startedAt,
+          evidence: 'manual retry requested',
+          manualRetry: true
+        };
+      }
       if (now - lastHeartbeatAt >= UPLOAD_HEARTBEAT_MS) {
         lastHeartbeatAt = now;
         try {
@@ -645,7 +710,8 @@ window.__xArticleWrite = async function(payload, options = {}) {
     return [
       'Upload timed out waiting for media entity',
       'Upload call failed',
-      'X upload handler not found'
+      'X upload handler not found',
+      'Manual retry requested'
     ].some((needle) => text.includes(needle));
   }
 
@@ -673,6 +739,7 @@ window.__xArticleWrite = async function(payload, options = {}) {
       }
       last = result;
       console.warn(LOG, `upload ${index}/${total} attempt ${attempt}/${maxAttempts} failed in ${seconds(result.elapsedMs)}s`, result.error, result.evidence || '');
+      if (result.manualRetry && attempt >= maxAttempts && maxAttempts < 5) maxAttempts += 1;
       if (attempt >= maxAttempts || !isRetryableUploadError(result.error)) break;
       try { hooks.onRetry?.(attempt + 1, maxAttempts, result.error || 'upload failed', result); } catch {}
     }
@@ -1041,6 +1108,7 @@ window.__xArticleWrite = async function(payload, options = {}) {
       const uploads = [];
       let coverUpload = null;
       let lastUploadElapsedMs = 0;
+      let mediaUploadAttempts = 0;
       emitProgress({
         phase: imageOps.length ? 'uploading_images' : 'cleanup',
         imageTotal: imageOps.length,
@@ -1068,6 +1136,39 @@ window.__xArticleWrite = async function(payload, options = {}) {
 
         const isCoverUpload = isCoverImageOperation(op, imgPayload, p.cover || '');
         const uploadLabel = isCoverUpload ? 'cover image' : 'image';
+        if (mediaUploadAttempts >= X_ARTICLE_MEDIA_LIMIT) {
+          summary.imgFail++;
+          summary.imgSkipped = (summary.imgSkipped || 0) + 1;
+          const fallback = imgPayload.fallbackText || (imgPayload.coverOnly ? '' : `[image skipped: X Articles supports up to ${X_ARTICLE_MEDIA_LIMIT} media files per article]`);
+          replaceMarkerText(draftNode, op.marker, fallback);
+          const limitMessage = `Skipped ${uploadLabel} ${i + 1}/${imageOps.length}: X Articles media limit is ${X_ARTICLE_MEDIA_LIMIT}`;
+          console.warn(LOG, limitMessage, imgPayload.fileName || '');
+          summary.uploadTimings.push({
+            index: i + 1,
+            total: imageOps.length,
+            fileName: imgPayload.fileName || '',
+            ok: false,
+            skipped: true,
+            attempts: 0,
+            elapsedMs: 0,
+            evidence: `X Articles media limit ${X_ARTICLE_MEDIA_LIMIT}`,
+            error: 'Skipped by media limit guard'
+          });
+          emitProgress({
+            phase: 'uploading_images',
+            imageIndex: i + 1,
+            imageTotal: imageOps.length,
+            imageOk: summary.imgOk,
+            imageFail: summary.imgFail,
+            currentFileName: imgPayload.fileName || '',
+            coverOnly: !!imgPayload.coverOnly,
+            evidence: `X Articles media limit ${X_ARTICLE_MEDIA_LIMIT}`,
+            message: limitMessage
+          });
+          draftNode = findDraftStateNode() || draftNode;
+          continue;
+        }
+        mediaUploadAttempts++;
         const waitMs = uploadPacingDelayMs(i + 1, imageOps.length, lastUploadElapsedMs);
         if (waitMs > 0) {
           const waitMessage = `Pacing upload: waiting ${seconds(waitMs)}s before ${uploadLabel} ${i + 1}/${imageOps.length}`;
